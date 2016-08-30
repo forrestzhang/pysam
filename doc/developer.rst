@@ -8,53 +8,52 @@ Code organization
 The top level directory is organized in the following 
 directories:
 
-pysam
+:file:`pysam`
    Code specific to pysam
 
-samtools
-   Original and unmodified source code from :term:`csamtools`. Use 
-   :file:`setup.py` to obtain the latest code.
+:file:`doc`
+   The documentation. To build the latest documention type::
 
-tests
-   Examples and data for testing
+       make -C doc html
 
-Importing :term:`csamtools`
-===========================
+:file:`tests`
+   Code and data for testing
 
-Running :file:`setup.py` will import the csamtools source code. 
-The command::
+:file:`htslib`
+   Source code from htslib_ shipped with pysam. See
+   :file:`setup.py` about importing.
 
-   python setup.py import PATH
+:file:`samtools`
+   Source code from :term:`csamtools` shipped with pysam. See
+   :file:`setup.py` about importing.
 
-where ``PATH`` points to a :term:`csamtools` source directory. For example::
 
-   python setup.py import ~/samtools-0.1.6
+Importing new versions of htslib and samtools
+=============================================
 
-Note that files will not be overwritten. To import all anew, 
-delete all :file:`*.c` and :file:`*.h` files in the :file:`samtools`
-directory first. 
+See instructions in :file:`setup.py` to import the latest
+version of htslib_ and samtools_.
 
 Unit testing
 ============
 
-Unit tests are in the scripts :file:`pysam_test.py` and :file:`tabix_test.py`. 
+Unit tests are in the :file:`tests` directory. To run all unit tests,
+run::
+
+   nosetests -s -v tests
+
+Note to use the ``-s/--nocapture`` option to prevent nosetests from
+captpuring standard output.
 
 Contributors
 ============
 
-The following people have contributed to pysam:
+Please see github for a list of all contributors:
 
-* Andreas Heger
-* Tildon Grant Belgrad
-* Kevin Jacobs
-* Florian Finkernagel
-* Ben Schiller
-* Marcel Martin
-* Gerton Lunter
-* Martin Goodson
-* Leo Goodstadt
+https://github.com/pysam-developers/pysam/graphs/contributors
 
-
+Many thanks to all contributors for helping in making pysam
+useful.
 
 
 

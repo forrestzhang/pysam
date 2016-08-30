@@ -1,12 +1,25 @@
+os:
+  - linx
+  - osx
 
-language: python
+language: c
+sudo: required
 
-python:
-  - "2.7"
-  - "3.3"
+env:
+  matrix:
+    - CONDA_PY=2.7
+    - CONDA_PY=3.3
+    - CONDA_PY=3.4
+    - CONDA_PY=3.5
 
-script: 
-  - sudo ./install-CGAT-tools.sh --travis
+addons:
+  apt:
+    packages:
+    - gcc
+    - g++
+
+script:
+  - ./run_tests_travis.sh
 
 notifications:
   email:

@@ -1,25 +1,31 @@
-.. samtools documentation master file, created by
-   sphinx-quickstart on Wed Aug 12 14:43:42 2009.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
+pysam: htslib interface for python
+==================================
 
-pysam: samtools interface for python
-====================================
-
-:Author: Andreas Heger and contributors
+:Author: Andreas Heger, Kevin Jacobs and contributors
 :Date: |today|
 :Version: |version|
 
-The *SAM/BAM* format is a way to store efficiently large numbers of alignments
-[Li2009]_, such as those routinely are created by next-generation sequencing 
-methods.
+Pysam is a python module for reading, manipulating and writing
+genomic data sets.
 
-This module provides a low-level wrapper around the samtools_ C-API using `cython`_
-and a high-level API for convenient access to the data in *SAM/BAM* formatted files.
-Also included is an interface to the tabix_ C-API for reading compressed and
-indexed tabular data.
+Pysam is a wrapper of the htslib_ C-API and provides facilities to
+read and write SAM/BAM/VCF/BCF/BED/GFF/GTF/FASTA/FASTQ files as well
+as access to the command line functionality of the samtools_ and
+bcftools_ packages. The module supports compression and random access
+through indexing.
 
-The current version wraps *samtools-0.1.19* and *tabix-0.2.6*.
+This module provides a low-level wrapper around the htslib_ C-API as
+using cython and a high-level, pythonic API for convenient access to
+the data within genomic file formats. 
+
+The current version wraps *htslib-1.3*, *samtools-1.3* and
+*bcftools-1.3*.
+
+To install the latest release, type::
+
+    pip install pysam
+
+See the :ref:`Installation notes <installation>` for details.
 
 Contents
 --------
@@ -29,11 +35,11 @@ Contents
 
    api.rst
    usage.rst
-   tabix.rst
+   installation.rst
    faq.rst
-   glossary.rst
    developer.rst
    release.rst
+   glossary.rst
 
 Indices and tables
 ------------------
@@ -52,6 +58,9 @@ References
 	    `PMID: 19505943 <http://www.ncbi.nlm.nih.gov/pubmed/19505943?dopt=Abstract>`_
 
 .. seealso::
+ 
+   Information about htslib
+      http://www.htslib.org
 
    The samtools homepage
       http://samtools.sourceforge.net
@@ -61,13 +70,3 @@ References
 
    The python language
       http://www.python.org
-
-.. _samtools: http://samtools.sourceforge.net
-
-.. _tabix: http://samtools.sourceforge.net/tabix.shtml
-
-.. _cython: http://cython.org/
-
-.. _python: http://www.python.org
-
-

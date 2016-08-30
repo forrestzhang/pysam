@@ -3,7 +3,7 @@
 *#
 
 # test directory
-pysam/
+tests/pysam/
 tests/tmp*
 tests/*.bam
 tests/*.bai
@@ -12,14 +12,30 @@ tests/*.c
 tests/*.pyxbldc
 tests/*.sam
 tests/*.fai
-tests/pysam_test_work
+tests/pysam_data
+tests/cbcf_data
+
+samtools/config.h
+htslib/config.status
+htslib/config.h
+htslib/config.log
+htslib/config.mk
+pysam/config.py
 
 # cython files
 pysam/TabProxies.c
 pysam/csamtools.c
 pysam/ctabix.c
 pysam/cvcf.c
-  
+pysam/chtslib.c  
+pysam/cutils.c
+pysam/calignedsegment.c
+pysam/calignmentfile.c
+pysam/cbcf.c
+pysam/cfaidx.c
+pysam/chtslib.c
+pysam/csamfile.c
+pysam/ctabixproxies.c
 
 ###### Generic python ignores below ######
 
