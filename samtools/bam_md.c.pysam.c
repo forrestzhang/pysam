@@ -1,8 +1,8 @@
-#include "pysam.h"
+#include "samtools.pysam.h"
 
 /*  bam_md.c -- calmd subcommand.
 
-    Copyright (C) 2009-2011, 2014-2015 Genome Research Ltd.
+    Copyright (C) 2009-2011, 2014-2015, 2019-2020, 2022 Genome Research Ltd.
     Portions copyright (C) 2009-2011 Broad Institute.
 
     Author: Heng Li <lh3@sanger.ac.uk>
@@ -27,15 +27,17 @@ DEALINGS IN THE SOFTWARE.  */
 
 #include <config.h>
 
-#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <limits.h>
-#include <math.h>
+#include <errno.h>
+#include <assert.h>
 #include "htslib/faidx.h"
 #include "htslib/sam.h"
 #include "htslib/kstring.h"
-#include "kprobaln.h"
+#include "htslib/thread_pool.h"
 #include "sam_opts.h"
 #include "samtools.h"
 
@@ -46,99 +48,151 @@ DEALINGS IN THE SOFTWARE.  */
 #define UPDATE_MD 16
 #define HASH_QNM  32
 
+typedef struct cached_ref_entry {
+    char *ref;
+    hts_pos_t len;
+} cached_ref_entry;
+
+typedef struct ref_cache {
+    cached_ref_entry *refs;
+    char *last_ref;
+    hts_pos_t last_len;
+    int nref;
+    int last_tid;
+} ref_cache;
+
 int bam_aux_drop_other(bam1_t *b, uint8_t *s);
 
-void bam_fillmd1_core(bam1_t *b, char *ref, int ref_len, int flag, int max_nm)
+static int bam_fillmd1_core(const char *ref_name, bam1_t *b, char *ref,
+                            hts_pos_t ref_len, int flag, int max_nm,
+                            int quiet_mode, uint32_t *skipped)
 {
     uint8_t *seq = bam_get_seq(b);
     uint32_t *cigar = bam_get_cigar(b);
     bam1_core_t *c = &b->core;
-    int i, x, y, u = 0;
-    kstring_t *str;
+    int i, qpos, matched = 0;
+    hts_pos_t rpos;
+    kstring_t str = KS_INITIALIZE;
     int32_t old_nm_i = -1, nm = 0;
+    uint32_t err = 0;
 
-    str = (kstring_t*)calloc(1, sizeof(kstring_t));
-    for (i = y = 0, x = c->pos; i < c->n_cigar; ++i) {
-        int j, l = cigar[i]>>4, op = cigar[i]&0xf;
+    if (c->l_qseq == 0) {
+        if (!quiet_mode) {
+            if (ref_name) {
+                fprintf(samtools_stderr, "[bam_fillmd1] no sequence in alignment "
+                        "record for '%s' at %s:%"PRIhts_pos", skipped\n",
+                        bam_get_qname(b), ref_name, c->pos + 1);
+            } else {
+                fprintf(samtools_stderr, "[bam_fillmd1] no sequence in alignment "
+                        "record for '%s', skipped", bam_get_qname(b));
+            }
+        }
+        if (skipped) (*skipped)++;
+        return 0;
+    }
+
+    for (i = qpos = 0, rpos = c->pos; i < c->n_cigar; ++i) {
+        int j, oplen = cigar[i]>>4, op = cigar[i]&0xf;
         if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF) {
-            for (j = 0; j < l; ++j) {
-                int c1, c2, z = y + j;
-                if (x+j >= ref_len || ref[x+j] == '\0') break; // out of bounds
-                c1 = bam_seqi(seq, z), c2 = seq_nt16_table[(int)ref[x+j]];
+            for (j = 0; j < oplen; ++j) {
+                int c1, c2, z = qpos + j;
+                if (rpos+j >= ref_len || z >= c->l_qseq || ref[rpos+j] == '\0')
+                    break; // out of bounds
+                c1 = bam_seqi(seq, z);
+                c2 = seq_nt16_table[(uint8_t)ref[rpos+j]];
                 if ((c1 == c2 && c1 != 15 && c2 != 15) || c1 == 0) { // a match
                     if (flag&USE_EQUAL) seq[z/2] &= (z&1)? 0xf0 : 0x0f;
-                    ++u;
+                    ++matched;
                 } else {
-                    kputw(u, str); kputc(ref[x+j], str);
-                    u = 0; ++nm;
+                    err |= kputw(matched, &str) < 0;
+                    err |= kputc(toupper_c(ref[rpos+j]), &str) < 0;
+                    matched = 0; ++nm;
                 }
             }
-            if (j < l) break;
-            x += l; y += l;
+            if (j < oplen) break;
+            rpos += oplen; qpos += oplen;
         } else if (op == BAM_CDEL) {
-            kputw(u, str); kputc('^', str);
-            for (j = 0; j < l; ++j) {
-                if (x+j >= ref_len || ref[x+j] == '\0') break;
-                kputc(ref[x+j], str);
+            err |= kputw(matched, &str) < 0;
+            err |= kputc('^', &str) < 0;
+            for (j = 0; j < oplen; ++j) {
+                if (rpos+j >= ref_len || ref[rpos+j] == '\0') break;
+                err |= kputc(toupper_c(ref[rpos+j]), &str) < 0;
             }
-            u = 0;
-            x += j; nm += j;
-            if (j < l) break;
+            matched = 0;
+            rpos += j; nm += j;
+            if (j < oplen) break;
         } else if (op == BAM_CINS || op == BAM_CSOFT_CLIP) {
-            y += l;
-            if (op == BAM_CINS) nm += l;
+            qpos += oplen;
+            if (op == BAM_CINS) nm += oplen;
         } else if (op == BAM_CREF_SKIP) {
-            x += l;
+            rpos += oplen;
         }
     }
-    kputw(u, str);
+    err |= kputw(matched, &str) < 0;
+    if (err) {
+        print_error_errno("calmd", "Couldn't build new MD string");
+        goto fail;
+    }
     // apply max_nm
     if (max_nm > 0 && nm >= max_nm) {
-        for (i = y = 0, x = c->pos; i < c->n_cigar; ++i) {
-            int j, l = cigar[i]>>4, op = cigar[i]&0xf;
+        for (i = qpos = 0, rpos = c->pos; i < c->n_cigar; ++i) {
+            int j, oplen = cigar[i]>>4, op = cigar[i]&0xf;
             if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF) {
-                for (j = 0; j < l; ++j) {
-                    int c1, c2, z = y + j;
-                    if (x+j >= ref_len || ref[x+j] == '\0') break; // out of bounds
-                    c1 = bam_seqi(seq, z), c2 = seq_nt16_table[(int)ref[x+j]];
+                for (j = 0; j < oplen; ++j) {
+                    int c1, c2, z = qpos + j;
+                    if (rpos+j >= ref_len || z >= c->l_qseq || ref[rpos+j] == '\0')
+                        break; // out of bounds
+                    c1 = bam_seqi(seq, z);
+                    c2 = seq_nt16_table[(uint8_t)ref[rpos+j]];
                     if ((c1 == c2 && c1 != 15 && c2 != 15) || c1 == 0) { // a match
                         seq[z/2] |= (z&1)? 0x0f : 0xf0;
                         bam_get_qual(b)[z] = 0;
                     }
                 }
-                if (j < l) break;
-                x += l; y += l;
-            } else if (op == BAM_CDEL || op == BAM_CREF_SKIP) x += l;
-            else if (op == BAM_CINS || op == BAM_CSOFT_CLIP) y += l;
+                if (j < oplen) break;
+                rpos += oplen; qpos += oplen;
+            } else if (op == BAM_CDEL || op == BAM_CREF_SKIP) rpos += oplen;
+            else if (op == BAM_CINS || op == BAM_CSOFT_CLIP) qpos += oplen;
         }
     }
     // update NM
     if ((flag & UPDATE_NM) && !(c->flag & BAM_FUNMAP)) {
         uint8_t *old_nm = bam_aux_get(b, "NM");
         if (old_nm) old_nm_i = bam_aux2i(old_nm);
-        if (!old_nm) bam_aux_append(b, "NM", 'i', 4, (uint8_t*)&nm);
+        if (!old_nm) {
+            if (bam_aux_append(b, "NM", 'i', 4, (uint8_t*)&nm) < 0)
+                goto aux_fail;
+        }
         else if (nm != old_nm_i) {
-            fprintf(pysam_stderr, "[bam_fillmd1] different NM for read '%s': %d -> %d\n", bam_get_qname(b), old_nm_i, nm);
-            bam_aux_del(b, old_nm);
-            bam_aux_append(b, "NM", 'i', 4, (uint8_t*)&nm);
+            if (!quiet_mode) {
+                fprintf(samtools_stderr, "[bam_fillmd1] different NM for read '%s': %d -> %d\n", bam_get_qname(b), old_nm_i, nm);
+            }
+            if (bam_aux_del(b, old_nm) < 0) goto aux_fail;
+            if (bam_aux_append(b, "NM", 'i', 4, (uint8_t*)&nm) < 0)
+                goto aux_fail;
         }
     }
     // update MD
     if ((flag & UPDATE_MD) && !(c->flag & BAM_FUNMAP)) {
         uint8_t *old_md = bam_aux_get(b, "MD");
-        if (!old_md) bam_aux_append(b, "MD", 'Z', str->l + 1, (uint8_t*)str->s);
-        else {
+        if (!old_md) {
+            if (bam_aux_append(b, "MD", 'Z', str.l + 1, (uint8_t*)str.s) < 0)
+                goto aux_fail;
+        } else {
             int is_diff = 0;
-            if (strlen((char*)old_md+1) == str->l) {
-                for (i = 0; i < str->l; ++i)
-                    if (toupper(old_md[i+1]) != toupper(str->s[i]))
+            if (strlen((char*)old_md+1) == str.l) {
+                for (i = 0; i < str.l; ++i)
+                    if (toupper(old_md[i+1]) != toupper_c(str.s[i]))
                         break;
-                if (i < str->l) is_diff = 1;
+                if (i < str.l) is_diff = 1;
             } else is_diff = 1;
             if (is_diff) {
-                fprintf(pysam_stderr, "[bam_fillmd1] different MD for read '%s': '%s' -> '%s'\n", bam_get_qname(b), old_md+1, str->s);
-                bam_aux_del(b, old_md);
-                bam_aux_append(b, "MD", 'Z', str->l + 1, (uint8_t*)str->s);
+                if (!quiet_mode) {
+                    fprintf(samtools_stderr, "[bam_fillmd1] different MD for read '%s': '%s' -> '%s'\n", bam_get_qname(b), old_md+1, str.s);
+                }
+                if (bam_aux_del(b, old_md) < 0) goto aux_fail;
+                if (bam_aux_append(b, "MD", 'Z', str.l + 1, (uint8_t*)str.s) < 0)
+                    goto aux_fail;
             }
         }
     }
@@ -155,221 +209,170 @@ void bam_fillmd1_core(bam1_t *b, char *ref, int ref_len, int flag, int max_nm)
             if (qual[i] >= 3) qual[i] = qual[i]/10*10 + 7;
     }
 
-    free(str->s); free(str);
+    free(str.s);
+    return 0;
+
+ aux_fail:
+    if (errno == ENOMEM) {
+        print_error("calmd", "Couldn't add aux tag (too long)");
+    } else if (errno == EINVAL) {
+        print_error("calmd", "Corrupt aux data");
+    } else {
+        print_error_errno("calmd", "Couldn't add aux tag");
+    }
+ fail:
+    free(str.s);
+    return -1;
 }
 
-void bam_fillmd1(bam1_t *b, char *ref, int flag)
+int bam_fillmd1(bam1_t *b, char *ref, int flag, int quiet_mode)
 {
-    bam_fillmd1_core(b, ref, INT_MAX, flag, 0);
+    return bam_fillmd1_core(NULL, b, ref, INT_MAX, flag, 0, quiet_mode, NULL);
 }
 
-int bam_cap_mapQ(bam1_t *b, char *ref, int ref_len, int thres)
+// Get a new reference sequence.
+// For position-sorted inputs, the previous reference should never be
+// needed again and can be discarded to save memory.  For other orderings,
+// references are stored in a cache in case they're required in the future.
+// The caching mode is turned on if the requested  tid is less than the last
+// one used, indicating the file ordering doesn't match the sequence dictionary.
+static int get_ref(faidx_t *fai, sam_hdr_t *header, ref_cache *cache,
+                   int tid, char **ref_out, const char **ref_name_out,
+                   hts_pos_t *len_out)
 {
-    uint8_t *seq = bam_get_seq(b), *qual = bam_get_qual(b);
-    uint32_t *cigar = bam_get_cigar(b);
-    bam1_core_t *c = &b->core;
-    int i, x, y, mm, q, len, clip_l, clip_q;
-    double t;
-    if (thres < 0) thres = 40; // set the default
-    mm = q = len = clip_l = clip_q = 0;
-    for (i = y = 0, x = c->pos; i < c->n_cigar; ++i) {
-        int j, l = cigar[i]>>4, op = cigar[i]&0xf;
-        if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF) {
-            for (j = 0; j < l; ++j) {
-                int c1, c2, z = y + j;
-                if (x+j >= ref_len || ref[x+j] == '\0') break; // out of bounds
-                c1 = bam_seqi(seq, z), c2 = seq_nt16_table[(int)ref[x+j]];
-                if (c2 != 15 && c1 != 15 && qual[z] >= 13) { // not ambiguous
-                    ++len;
-                    if (c1 && c1 != c2 && qual[z] >= 13) { // mismatch
-                        ++mm;
-                        q += qual[z] > 33? 33 : qual[z];
-                    }
-                }
-            }
-            if (j < l) break;
-            x += l; y += l; len += l;
-        } else if (op == BAM_CDEL) {
-            for (j = 0; j < l; ++j)
-                if (x+j >= ref_len || ref[x+j] == '\0') break;
-            if (j < l) break;
-            x += l;
-        } else if (op == BAM_CSOFT_CLIP) {
-            for (j = 0; j < l; ++j) clip_q += qual[y+j];
-            clip_l += l;
-            y += l;
-        } else if (op == BAM_CHARD_CLIP) {
-            clip_q += 13 * l;
-            clip_l += l;
-        } else if (op == BAM_CINS) y += l;
-        else if (op == BAM_CREF_SKIP) x += l;
-    }
-    for (i = 0, t = 1; i < mm; ++i)
-        t *= (double)len / (i+1);
-    t = q - 4.343 * log(t) + clip_q / 5.;
-    if (t > thres) return -1;
-    if (t < 0) t = 0;
-    t = sqrt((thres - t) / thres) * thres;
-//  fprintf(pysam_stderr, "%s %lf %d\n", bam_get_qname(b), t, q);
-    return (int)(t + .499);
-}
+    char *ref = NULL;
+    const char *ref_name;
+    hts_pos_t len = 0;
 
-int bam_prob_realn_core(bam1_t *b, const char *ref, int ref_len, int flag)
-{
-    int k, i, bw, x, y, yb, ye, xb, xe, apply_baq = flag&1, extend_baq = flag>>1&1, redo_baq = flag&4;
-    uint32_t *cigar = bam_get_cigar(b);
-    bam1_core_t *c = &b->core;
-    kpa_par_t conf = kpa_par_def;
-    uint8_t *bq = 0, *zq = 0, *qual = bam_get_qual(b);
-    if ((c->flag & BAM_FUNMAP) || b->core.l_qseq == 0 || qual[0] == (uint8_t)-1)
-        return -1; // do nothing
+    // This should only be called when tid changes
+    assert(tid != cache->last_tid);
 
-    // test if BQ or ZQ is present
-    if ((bq = bam_aux_get(b, "BQ")) != 0) ++bq;
-    if ((zq = bam_aux_get(b, "ZQ")) != 0 && *zq == 'Z') ++zq;
-    if (bq && redo_baq)
-    {
-        bam_aux_del(b, bq-1);
-        bq = 0;
-    }
-    if (bq && zq) { // remove the ZQ tag
-        bam_aux_del(b, zq-1);
-        zq = 0;
-    }
-    if (bq || zq) {
-        if ((apply_baq && zq) || (!apply_baq && bq)) return -3; // in both cases, do nothing
-        if (bq && apply_baq) { // then convert BQ to ZQ
-            for (i = 0; i < c->l_qseq; ++i)
-                qual[i] = qual[i] + 64 < bq[i]? 0 : qual[i] - ((int)bq[i] - 64);
-            *(bq - 3) = 'Z';
-        } else if (zq && !apply_baq) { // then convert ZQ to BQ
-            for (i = 0; i < c->l_qseq; ++i)
-                qual[i] += (int)zq[i] - 64;
-            *(zq - 3) = 'B';
-        }
+    // Array lookup, should be fast
+    ref_name = sam_hdr_tid2name(header, tid);
+    *ref_name_out = ref_name;
+
+    // Return a cached entry, if available
+    if (cache->refs && tid >= 0 && tid < cache->nref
+        && cache->refs[tid].ref) {
+        assert(cache->last_ref == NULL);
+        *ref_out = cache->refs[tid].ref;
+        *len_out = cache->refs[tid].len;
+        cache->last_tid = tid;
         return 0;
     }
-    // find the start and end of the alignment
-    x = c->pos, y = 0, yb = ye = xb = xe = -1;
-    for (k = 0; k < c->n_cigar; ++k) {
-        int op, l;
-        op = cigar[k]&0xf; l = cigar[k]>>4;
-        if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF) {
-            if (yb < 0) yb = y;
-            if (xb < 0) xb = x;
-            ye = y + l; xe = x + l;
-            x += l; y += l;
-        } else if (op == BAM_CSOFT_CLIP || op == BAM_CINS) y += l;
-        else if (op == BAM_CDEL) x += l;
-        else if (op == BAM_CREF_SKIP) return -1; // do nothing if there is a reference skip
+
+    // Try to get the reference
+    if (ref_name)
+        ref = fai_fetch64(fai, ref_name, &len);
+
+    if (!ref) {
+        // Historically, calmd doesn't worry too much about missing refs
+        *ref_out = NULL;
+        *len_out = 0;
+        return 0;
     }
-    // set bandwidth and the start and the end
-    bw = 7;
-    if (abs((xe - xb) - (ye - yb)) > bw)
-        bw = abs((xe - xb) - (ye - yb)) + 3;
-    conf.bw = bw;
-    xb -= yb + bw/2; if (xb < 0) xb = 0;
-    xe += c->l_qseq - ye + bw/2;
-    if (xe - xb - c->l_qseq > bw)
-        xb += (xe - xb - c->l_qseq - bw) / 2, xe -= (xe - xb - c->l_qseq - bw) / 2;
-    { // glocal
-        uint8_t *s, *r, *q, *seq = bam_get_seq(b), *bq;
-        int *state;
-        bq = calloc(c->l_qseq + 1, 1);
-        memcpy(bq, qual, c->l_qseq);
-        s = calloc(c->l_qseq, 1);
-        for (i = 0; i < c->l_qseq; ++i) s[i] = seq_nt16_int[bam_seqi(seq, i)];
-        r = calloc(xe - xb, 1);
-        for (i = xb; i < xe; ++i) {
-            if (i >= ref_len || ref[i] == '\0') { xe = i; break; }
-            r[i-xb] = seq_nt16_int[seq_nt16_table[(int)ref[i]]];
+
+    if (!cache->refs && cache->last_tid > tid) {
+        // Going backwards throught the list of tids implies
+        // a non-position-ordered file, so turn on caching mode
+        cache->nref = sam_hdr_nref(header);
+        if (cache->nref < 0) {
+            print_error("calmd", "couldn't get number of refs from header");
+            return -1;
         }
-        state = calloc(c->l_qseq, sizeof(int));
-        q = calloc(c->l_qseq, 1);
-        kpa_glocal(r, xe-xb, s, c->l_qseq, qual, &conf, state, q);
-        if (!extend_baq) { // in this block, bq[] is capped by base quality qual[]
-            for (k = 0, x = c->pos, y = 0; k < c->n_cigar; ++k) {
-                int op = cigar[k]&0xf, l = cigar[k]>>4;
-                if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF) {
-                    for (i = y; i < y + l; ++i) {
-                        if ((state[i]&3) != 0 || state[i]>>2 != x - xb + (i - y)) bq[i] = 0;
-                        else bq[i] = bq[i] < q[i]? bq[i] : q[i];
-                    }
-                    x += l; y += l;
-                } else if (op == BAM_CSOFT_CLIP || op == BAM_CINS) y += l;
-                else if (op == BAM_CDEL) x += l;
+        if (cache->nref > 0) {
+            cache->refs = calloc(cache->nref, sizeof(cache->refs[0]));
+            if (!cache->refs) {
+                print_error_errno("calmd",
+                                  "couldn't allocate reference cache");
+                return -1;
             }
-            for (i = 0; i < c->l_qseq; ++i) bq[i] = qual[i] - bq[i] + 64; // finalize BQ
-        } else { // in this block, bq[] is BAQ that can be larger than qual[] (different from the above!)
-            uint8_t *left, *rght;
-            left = calloc(c->l_qseq, 1); rght = calloc(c->l_qseq, 1);
-            for (k = 0, x = c->pos, y = 0; k < c->n_cigar; ++k) {
-                int op = cigar[k]&0xf, l = cigar[k]>>4;
-                if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF) {
-                    for (i = y; i < y + l; ++i)
-                        bq[i] = ((state[i]&3) != 0 || state[i]>>2 != x - xb + (i - y))? 0 : q[i];
-                    for (left[y] = bq[y], i = y + 1; i < y + l; ++i)
-                        left[i] = bq[i] > left[i-1]? bq[i] : left[i-1];
-                    for (rght[y+l-1] = bq[y+l-1], i = y + l - 2; i >= y; --i)
-                        rght[i] = bq[i] > rght[i+1]? bq[i] : rght[i+1];
-                    for (i = y; i < y + l; ++i)
-                        bq[i] = left[i] < rght[i]? left[i] : rght[i];
-                    x += l; y += l;
-                } else if (op == BAM_CSOFT_CLIP || op == BAM_CINS) y += l;
-                else if (op == BAM_CDEL) x += l;
+            // Add the reference we already have as the first entry
+            if (cache->last_tid >= 0 && cache->last_tid < cache->nref) {
+                cache->refs[cache->last_tid].ref = cache->last_ref;
+                cache->refs[cache->last_tid].len = cache->last_len;
+            } else {
+                free(cache->last_ref);
             }
-            for (i = 0; i < c->l_qseq; ++i) bq[i] = 64 + (qual[i] <= bq[i]? 0 : qual[i] - bq[i]); // finalize BQ
-            free(left); free(rght);
+            cache->last_ref = NULL;
         }
-        if (apply_baq) {
-            for (i = 0; i < c->l_qseq; ++i) qual[i] -= bq[i] - 64; // modify qual
-            bam_aux_append(b, "ZQ", 'Z', c->l_qseq + 1, bq);
-        } else bam_aux_append(b, "BQ", 'Z', c->l_qseq + 1, bq);
-        free(bq); free(s); free(r); free(q); free(state);
     }
+
+    if (cache->refs) {
+        assert(cache->last_ref == NULL);  // Shouldn't be set when caching
+        // Add the new reference to the cache
+        if (tid >= 0 && tid < cache->nref) {
+            cache->refs[tid].ref = ref;
+            cache->refs[tid].len = len;
+        }
+    } else {
+        // Streaming mode - free the last ref and replace it with this one
+        free(cache->last_ref);
+        cache->last_ref = ref;
+        cache->last_len = len;
+    }
+
+    *ref_out = ref;
+    *len_out = len;
+    cache->last_tid = tid;
     return 0;
 }
 
-int bam_prob_realn(bam1_t *b, const char *ref)
-{
-    return bam_prob_realn_core(b, ref, INT_MAX, 1);
+static void refs_destroy(ref_cache *cache) {
+    if (cache->refs) {
+        int i;
+        assert(cache->last_ref == NULL);
+        for (i = 0; i < cache->nref; i++)
+            free(cache->refs[i].ref);
+        free(cache->refs);
+    } else {
+        free(cache->last_ref);
+    }
 }
 
-int calmd_usage() {
-    fprintf(pysam_stderr,
-"Usage: samtools calmd [-eubrAES] <aln.bam> <ref.fasta>\n"
+int calmd_usage(void) {
+    fprintf(samtools_stderr,
+"Usage: samtools calmd [-eubrAESQ] <aln.bam> <ref.fasta>\n"
 "Options:\n"
 "  -e       change identical bases to '='\n"
 "  -u       uncompressed BAM output (for piping)\n"
 "  -b       compressed BAM output\n"
 "  -S       ignored (input format is auto-detected)\n"
 "  -A       modify the quality string\n"
+"  -Q       use quiet mode to output less debug info to samtools_stdout\n"
 "  -r       compute the BQ tag (without -A) or cap baseQ by BAQ (with -A)\n"
-"  -E       extended BAQ for better sensitivity but lower specificity\n");
+"  -E       extended BAQ for better sensitivity but lower specificity\n"
+"  --no-PG  do not add a PG line\n");
 
-    sam_global_opt_help(pysam_stderr, "-....");
+    sam_global_opt_help(samtools_stderr, "-....@-.");
     return 1;
 }
 
 int bam_fillmd(int argc, char *argv[])
 {
-    int c, flt_flag, tid = -2, ret, len, is_bam_out, is_uncompressed, max_nm, is_realn, capQ, baq_flag;
+    int c, flt_flag, ret, is_bam_out, is_uncompressed, max_nm, is_realn, capQ, baq_flag, quiet_mode, no_pg = 0;
+    hts_pos_t len = 0;
+    htsThreadPool p = {NULL, 0};
     samFile *fp = NULL, *fpout = NULL;
-    bam_hdr_t *header = NULL;
+    sam_hdr_t *header = NULL;
     faidx_t *fai = NULL;
-    char *ref = NULL, mode_w[8], *ref_file;
+    char *ref = NULL, mode_w[8], *ref_file, *arg_list = NULL;
+    ref_cache refs = { NULL, NULL, 0, 0, -2 };
+    const char *ref_name = NULL;
     bam1_t *b = NULL;
     sam_global_args ga = SAM_GLOBAL_ARGS_INIT;
+    uint32_t skipped = 0;
 
     static const struct option lopts[] = {
-        SAM_OPT_GLOBAL_OPTIONS('-', 0, 0, 0, 0),
+        SAM_OPT_GLOBAL_OPTIONS('-', 0, 0, 0, 0,'@'),
+        {"no-PG", no_argument, NULL, 1},
         { NULL, 0, NULL, 0 }
     };
 
     flt_flag = UPDATE_NM | UPDATE_MD;
-    is_bam_out = is_uncompressed = is_realn = max_nm = capQ = baq_flag = 0;
+    is_bam_out = is_uncompressed = is_realn = max_nm = capQ = baq_flag = quiet_mode = 0;
     strcpy(mode_w, "w");
-    while ((c = getopt_long(argc, argv, "EqreuNhbSC:n:Ad", lopts, NULL)) >= 0) {
+    while ((c = getopt_long(argc, argv, "EqQreuNhbSC:n:Ad@:", lopts, NULL)) >= 0) {
         switch (c) {
         case 'r': is_realn = 1; break;
         case 'e': flt_flag |= USE_EQUAL; break;
@@ -384,8 +387,10 @@ int bam_fillmd(int argc, char *argv[])
         case 'C': capQ = atoi(optarg); break;
         case 'A': baq_flag |= 1; break;
         case 'E': baq_flag |= 2; break;
+        case 'Q': quiet_mode = 1; break;
+        case 1: no_pg = 1; break;
         default:  if (parse_sam_global_opt(c, optarg, lopts, &ga) == 0) break;
-            fprintf(pysam_stderr, "[bam_fillmd] unrecognized option '-%c'\n\n", c);
+            fprintf(samtools_stderr, "[bam_fillmd] unrecognized option '-%c'\n\n", c);
             /* else fall-through */
         case '?': return calmd_usage();
         }
@@ -401,20 +406,45 @@ int bam_fillmd(int argc, char *argv[])
         return 1;
     }
 
-    header = sam_hdr_read(fp);
-    if (header == NULL || header->n_targets == 0) {
-        fprintf(pysam_stderr, "[bam_fillmd] input SAM does not have header. Abort!\n");
-        goto fail;
+    if (!no_pg && !(arg_list = stringify_argv(argc+1, argv-1))) {
+        print_error("calmd", "failed to create arg_list");
+        return 1;
     }
-    
-    fpout = sam_open_format(pysam_stdout_fn, mode_w, &ga.out);
+
+    header = sam_hdr_read(fp);
+    if (header == NULL || sam_hdr_nref(header) == 0) {
+        // NB: if we have no SQ headers but have aligned data, then this will
+        // be caught during processing with e.g.
+        // "[E::sam_parse1] no SQ lines present in the header"
+        fprintf(samtools_stderr, "[bam_fillmd] warning: input SAM does not have "
+                "header, performing a no-op.\n");
+    }
+
+    fpout = sam_open_format(samtools_stdout_fn, mode_w, &ga.out);
     if (fpout == NULL) {
         print_error_errno("calmd", "Failed to open output");
+        goto fail;
+    }
+    if (!no_pg && sam_hdr_add_pg(header, "samtools",
+                                 "VN", samtools_version(),
+                                 arg_list ? "CL": NULL,
+                                 arg_list ? arg_list : NULL,
+                                 NULL)) {
+        print_error("calmd", "failed to add PG line to header");
         goto fail;
     }
     if (sam_hdr_write(fpout, header) < 0) {
         print_error_errno("calmd", "Failed to write sam header");
         goto fail;
+    }
+
+    if (ga.nthreads > 0) {
+        if (!(p.pool = hts_tpool_init(ga.nthreads))) {
+            fprintf(samtools_stderr, "Error creating thread pool\n");
+            goto fail;
+        }
+        hts_set_opt(fp,    HTS_OPT_THREAD_POOL, &p);
+        hts_set_opt(fpout, HTS_OPT_THREAD_POOL, &p);
     }
 
     ref_file = argc > optind + 1 ? argv[optind+1] : ga.reference;
@@ -427,27 +457,37 @@ int bam_fillmd(int argc, char *argv[])
 
     b = bam_init1();
     if (!b) {
-        fprintf(pysam_stderr, "[bam_fillmd] Failed to allocate bam struct\n");
+        fprintf(samtools_stderr, "[bam_fillmd] Failed to allocate bam struct\n");
         goto fail;
     }
     while ((ret = sam_read1(fp, header, b)) >= 0) {
         if (b->core.tid >= 0) {
-            if (tid != b->core.tid) {
-                free(ref);
-                ref = fai_fetch(fai, header->target_name[b->core.tid], &len);
-                tid = b->core.tid;
+            if (refs.last_tid != b->core.tid) {
+                if (get_ref(fai, header, &refs, b->core.tid,
+                            &ref, &ref_name, &len) < 0) {
+                    goto fail;
+                }
                 if (ref == 0) { // FIXME: Should this always be fatal?
-                    fprintf(pysam_stderr, "[bam_fillmd] fail to find sequence '%s' in the reference.\n",
-                            header->target_name[tid]);
+                    fprintf(samtools_stderr, "[bam_fillmd] fail to find sequence '%s' in the reference.\n",
+                            ref_name ? ref_name : "(unknown)");
                     if (is_realn || capQ > 10) goto fail; // Would otherwise crash
                 }
             }
-            if (is_realn) bam_prob_realn_core(b, ref, len, baq_flag);
+            if (is_realn) {
+                if (sam_prob_realn(b, ref, len, baq_flag) < -3) {
+                    print_error_errno("calmd", "BAQ alignment failed");
+                    goto fail;
+                }
+            }
             if (capQ > 10) {
-                int q = bam_cap_mapQ(b, ref, len, capQ);
+                int q = sam_cap_mapq(b, ref, len, capQ);
                 if (b->core.qual > q) b->core.qual = q;
             }
-            if (ref) bam_fillmd1_core(b, ref, len, flt_flag, max_nm);
+            if (ref) {
+                if (bam_fillmd1_core(ref_name, b, ref, len, flt_flag, max_nm,
+                                     quiet_mode, &skipped) < 0)
+                    goto fail;
+            }
         }
         if (sam_write1(fpout, header, b) < 0) {
             print_error_errno("calmd", "failed to write to output file");
@@ -455,27 +495,42 @@ int bam_fillmd(int argc, char *argv[])
         }
     }
     if (ret < -1) {
-        fprintf(pysam_stderr, "[bam_fillmd] Error reading input.\n");
+        fprintf(samtools_stderr, "[bam_fillmd] Error reading input.\n");
         goto fail;
     }
-    bam_destroy1(b);
-    bam_hdr_destroy(header);
 
-    free(ref);
+    if (skipped) {
+        fprintf(samtools_stderr, "[calmd] Warning: %"PRIu32" records skipped due "
+                "to no query sequence\n",
+                skipped);
+    }
+
+    bam_destroy1(b);
+    sam_hdr_destroy(header);
+
+    free(arg_list);
+    refs_destroy(&refs);
     fai_destroy(fai);
     sam_close(fp);
     if (sam_close(fpout) < 0) {
-        fprintf(pysam_stderr, "[bam_fillmd] error when closing output file\n");
+        fprintf(samtools_stderr, "[bam_fillmd] error when closing output file\n");
         return 1;
     }
+    if (p.pool) hts_tpool_destroy(p.pool);
+    sam_global_args_free(&ga);
+
     return 0;
 
  fail:
-    free(ref);
+    free(arg_list);
+    refs_destroy(&refs);
     if (b) bam_destroy1(b);
-    if (header) bam_hdr_destroy(header);
+    if (header) sam_hdr_destroy(header);
     if (fai) fai_destroy(fai);
     if (fp) sam_close(fp);
     if (fpout) sam_close(fpout);
+    if (p.pool) hts_tpool_destroy(p.pool);
+    sam_global_args_free(&ga);
+
     return 1;
 }

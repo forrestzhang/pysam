@@ -1,8 +1,8 @@
-#include "pysam.h"
+#include "samtools.pysam.h"
 
 /*  stats_isize.c -- generalised insert size calculation for samtools stats.
 
-    Copyright (C) 2014 Genome Research Ltd.
+    Copyright (C) 2014, 2018 Genome Research Ltd.
 
     Author: Nicholas Clarke <nc6@sanger.ac.uk>
 
@@ -96,8 +96,8 @@ static void sparse_set_f(isize_data_t data, int at, isize_insert_t field, uint64
             kh_value(h, it) = rec;
             a->max = max(at, a->max);
         } else {
-            fprintf(pysam_stderr, "%s\n", "Failed to allocate memory for isize_sparse_record_t");
-            exit(11);
+            fprintf(samtools_stderr, "%s\n", "Failed to allocate memory for isize_sparse_record_t");
+            samtools_exit(11);
         }
     } else {
         return;
@@ -164,12 +164,23 @@ isize_t *init_isize_t(int bound) {
     if (bound <= 0) {
         // Use sparse data structure.
         isize_sparse_data_t *data = (isize_sparse_data_t *) malloc(sizeof(isize_sparse_data_t));
+        if (!data)
+            return NULL;
 
         // Initialise
         data->max = 0;
         data->array = kh_init(m32);
+        if (!data->array) {
+            free(data);
+            return NULL;
+        }
 
         isize_t *isize = (isize_t *)malloc(sizeof(isize_t));
+        if (!isize) {
+            kh_destroy(m32, data->array);
+            free(data);
+            return NULL;
+        }
 
         isize->data.sparse = data;
         isize->nitems = & sparse_nitems;
@@ -194,12 +205,19 @@ isize_t *init_isize_t(int bound) {
         uint64_t* out = calloc(bound,sizeof(uint64_t));
         uint64_t* other = calloc(bound,sizeof(uint64_t));
         isize_dense_data_t *rec = (isize_dense_data_t *)malloc(sizeof(isize_dense_data_t));
+        isize_t *isize = (isize_t *)malloc(sizeof(isize_t));
+        if (!in || !out || !other || !rec || !isize) {
+            free(in);
+            free(out);
+            free(other);
+            free(rec);
+            free(isize);
+            return NULL;
+        }
         rec->isize_inward = in;
         rec->isize_outward = out;
         rec->isize_other = other;
         rec->total=bound;
-
-        isize_t *isize = (isize_t *)malloc(sizeof(isize_t));
 
         isize->data.dense = rec;
         isize->nitems = & dense_nitems;

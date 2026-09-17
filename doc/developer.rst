@@ -5,34 +5,57 @@ Developer's guide
 Code organization
 =================
 
-The top level directory is organized in the following 
-directories:
+The top level directory is organized into the following directories:
 
 :file:`pysam`
-   Code specific to pysam
+   Code specific to pysam.
 
 :file:`doc`
-   The documentation. To build the latest documention type::
+   The documentation. To build the latest documentation, first install
+   `Sphinx`_ and then type::
 
        make -C doc html
 
 :file:`tests`
-   Code and data for testing
+   Code and data for testing and benchmarking.
 
 :file:`htslib`
-   Source code from htslib_ shipped with pysam. See
-   :file:`setup.py` about importing.
+   Source code from `htslib`_ shipped with pysam. See
+   :file:`import.py` about importing.
 
 :file:`samtools`
-   Source code from :term:`csamtools` shipped with pysam. See
-   :file:`setup.py` about importing.
+   Source code from `samtools`_ shipped with pysam. See
+   :file:`import.py` about importing.
+
+:file:`bcftools`
+   Source code from `bcftools`_ shipped with pysam. See
+   :file:`import.py` about importing.
+
+
+Python language level
+=====================
+
+Pysam currently requires Python 3.9 as a minimum language level.
+For example, this means that the following comparatively recent
+language features and library functions are available for use:
+
+* f-strings
+* ``raise ... from None``
+* :meth:`str.startswith`, :meth:`str.endswith`, :meth:`str.removeprefix`, :meth:`str.removesuffix`, etc
+* walrus ``:=`` operator
+
+However in particular the following should not be used in
+pysam source code or infrastructure scripts:
+
+* ``Optional[type]`` type hints written as ``type | None`` etc (new in 3.10)
+* grouping parentheses in ``with`` statements (new in 3.10)
 
 
 Importing new versions of htslib and samtools
 =============================================
 
-See instructions in :file:`setup.py` to import the latest
-version of htslib_ and samtools_.
+See instructions in :file:`import.py` to import the latest
+versions of `htslib`_, `samtools`_ and `bcftools`_.
 
 Unit testing
 ============
@@ -40,23 +63,36 @@ Unit testing
 Unit tests are in the :file:`tests` directory. To run all unit tests,
 run::
 
-   nosetests -s -v tests
+   pytest tests
 
-Note to use the ``-s/--nocapture`` option to prevent nosetests from
-captpuring standard output.
+Most tests use test data from the :file:`tests/*_data` directories.
+Some of these test data files are generated from other files in these
+directories, which is done by running ``make`` in each directory::
+
+   make -C tests/pysam_data
+   # etc
+
+Alternatively if any :file:`tests/*_data/all.stamp` file is not already
+present, running the unit tests should generate that directory's data
+files automatically.
+
+Benchmarking
+============
+
+To run the benchmarking suite, make sure that `pytest-benchmark
+<https://github.com/ionelmc/pytest-benchmark>`_ is installed. To run
+all benchmarks, type::
+
+   pytest tests/*_bench.py
+
+See :ref:`Benchmarking` for more on this topic.
 
 Contributors
 ============
 
-Please see github for a list of all contributors:
+Please see Github for a list of all contributors:
 
 https://github.com/pysam-developers/pysam/graphs/contributors
 
 Many thanks to all contributors for helping in making pysam
 useful.
-
-
-
-
-
-

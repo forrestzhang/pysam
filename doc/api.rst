@@ -1,7 +1,4 @@
-======================================================
-pysam - An interface for reading and writing SAM files
-======================================================
-
+============
 Introduction
 ============
 
@@ -18,13 +15,13 @@ To use the module to read a file in BAM format, create a
    import pysam
    samfile = pysam.AlignmentFile("ex1.bam", "rb")
 
-Once a file is opened you can iterate over all of the read mapping to
+Once a file is opened you can iterate over all of the reads mapping to
 a specified region using :meth:`~pysam.AlignmentFile.fetch`.  Each
 iteration returns a :class:`~pysam.AlignedSegment` object which
 represents a single read along with its fields and optional tags::
 
    for read in samfile.fetch('chr1', 100, 120):
-	print read
+       print(read)
 
    samfile.close()
 
@@ -41,8 +38,8 @@ You can also write to a :class:`~pysam.AlignmentFile`::
    samfile = pysam.AlignmentFile("ex1.bam", "rb")
    pairedreads = pysam.AlignmentFile("allpaired.bam", "wb", template=samfile)
    for read in samfile.fetch():
-	if read.is_paired:
-		pairedreads.write(read)
+       if read.is_paired:
+           pairedreads.write(read)
 
    pairedreads.close()
    samfile.close()
@@ -58,12 +55,11 @@ reads are represented as :class:`~pysam.PileupRead` objects in the
     import pysam
     samfile = pysam.AlignmentFile("ex1.bam", "rb" )
     for pileupcolumn in samfile.pileup("chr1", 100, 120):
-        print ("\ncoverage at base %s = %s" %
-               (pileupcolumn.pos, pileupcolumn.n))
+        print("\ncoverage at base %s = %s" % (pileupcolumn.pos, pileupcolumn.n))
         for pileupread in pileupcolumn.pileups:
             if not pileupread.is_del and not pileupread.is_refskip:
                 # query position is None if is_del or is_refskip is set.
-                print ('\tbase in read %s = %s' %
+                print('\tbase in read %s = %s' %
                       (pileupread.alignment.query_name,
                        pileupread.alignment.query_sequence[pileupread.query_position]))
 
@@ -85,14 +81,14 @@ The above code outputs::
         base in read EAS51_64:3:190:727:308 = G
     ...
 
-Commands available in :term:`csamtools` are available as simple
+Commands available in `samtools`_ are available as simple
 function calls. For example::
 
-   pysam.sort("ex1.bam", "output")
+   pysam.sort("-o", "output.bam", "ex1.bam")
 
 corresponds to the command line::
 
-   samtools sort ex1.bam output
+   samtools sort -o output.bam ex1.bam
 
 Analogous to :class:`~pysam.AlignmentFile`, a
 :class:`~pysam.TabixFile` allows fast random access to compressed and
@@ -102,12 +98,12 @@ tabix indexed tab-separated file formats with genomic data::
    tabixfile = pysam.TabixFile("example.gtf.gz")
 
    for gtf in tabixfile.fetch("chr1", 1000, 2000):
-       print (gtf.contig, gtf.start, gtf.end, gtf.gene_id)
+       print(gtf.contig, gtf.start, gtf.end, gtf.gene_id)
 
 :class:`~pysam.TabixFile` implements lazy parsing in order to iterate
 over large tables efficiently.
 
-More detailed usage instructions is at :ref:`usage`.
+More detailed usage instructions are available at :ref:`usage`.
 
 .. note::
 
@@ -130,16 +126,20 @@ More detailed usage instructions is at :ref:`usage`.
 
        The pysam website containing documentation
 
+===
 API
 ===
 
-SAM/BAM files
--------------
+SAM/BAM/CRAM files
+==================
 
 Objects of type :class:`~pysam.AlignmentFile` allow working with
 BAM/SAM formatted files.
 
 .. autoclass:: pysam.AlignmentFile
+   :members:
+
+.. autoclass:: pysam.AlignmentHeader
    :members:
 
 An :class:`~pysam.AlignedSegment` represents an aligned segment within
@@ -157,9 +157,68 @@ a SAM/BAM file.
 .. autoclass:: pysam.IndexedReads
    :members:
 
+.. autofunction:: pysam.reverse_complement
+
+.. autofunction:: pysam.reverse_complement_inplace
+
+
+VCF/BCF files
+=============
+
+.. autoclass:: pysam.VariantFile
+   :members:
+
+.. autoclass:: pysam.VariantHeader
+   :members:
+
+.. autoclass:: pysam.VariantRecord
+   :members:
+
+.. autoclass:: pysam.VariantContig
+   :members:
+
+.. autoclass:: pysam.VariantHeaderRecord
+   :members:
+
+.. autoclass:: pysam.VariantMetadata
+   :members:
+
+.. autoclass:: pysam.VariantRecordSample
+   :members:
+
+Internal classes
+----------------
+
+These classes are used internally to represent particular header and record
+fields. They cannot be instantiated directly in your Python or Cython code.
+
+.. autoclass:: pysam.VariantHeaderContigs
+   :members:
+
+.. autoclass:: pysam.VariantHeaderMetadata
+   :members:
+
+.. autoclass:: pysam.VariantHeaderRecords
+   :members:
+
+.. autoclass:: pysam.VariantHeaderSamples
+   :members:
+
+.. autoclass:: pysam.VariantRecordFilter
+   :members:
+
+.. autoclass:: pysam.VariantRecordFormat
+   :members:
+
+.. autoclass:: pysam.VariantRecordInfo
+   :members:
+
+.. autoclass:: pysam.VariantRecordSamples
+   :members:
+
 
 Tabix files
------------
+===========
 
 :class:`~pysam.TabixFile` opens tabular files that have been
 indexed with tabix_.
@@ -188,34 +247,30 @@ To iterate over tabix files, use :func:`~pysam.tabix_iterator`:
    :members:
 
 
-Fasta files
------------
+FASTA files
+===========
 
 .. autoclass:: pysam.FastaFile
    :members:
 
-Fastq files
------------
+FASTQ files
+===========
 
 .. autoclass:: pysam.FastxFile
    :members:
 
+.. autoclass:: pysam.FastxRecord
+   :members:
 
-.. autoclass:: pysam.cfaidx.FastqProxy
+.. autoclass:: pysam.FastqProxy
    :members:
 
 
-VCF files
----------
+HTSFile
+=======
 
-.. autoclass:: pysam.VariantFile
-   :members:
+HTSFile is the base class for :class:`pysam.AlignmentFile` and
+:class:`pysam.VariantFile`.
 
-.. autoclass:: pysam.VariantHeader
-   :members:
-
-.. autoclass:: pysam.VariantRecord
-   :members:
-
-.. autoclass:: pysam.VariantHeaderRecord
+.. autoclass:: pysam.HTSFile
    :members:

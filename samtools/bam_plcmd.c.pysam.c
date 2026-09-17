@@ -1,8 +1,8 @@
-#include "pysam.h"
+#include "samtools.pysam.h"
 
 /*  bam_plcmd.c -- mpileup subcommand.
 
-    Copyright (C) 2008-2015 Genome Research Ltd.
+    Copyright (C) 2008-2015, 2019-2021, 2023-2026 Genome Research Ltd.
     Portions copyright (C) 2009-2012 Broad Institute.
 
     Author: Heng Li <lh3@sanger.ac.uk>
@@ -33,76 +33,145 @@ DEALINGS IN THE SOFTWARE.  */
 #include <unistd.h>
 #include <ctype.h>
 #include <string.h>
+#include <strings.h>
 #include <limits.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <getopt.h>
+#include <inttypes.h>
 #include <htslib/sam.h>
 #include <htslib/faidx.h>
 #include <htslib/kstring.h>
+#include <htslib/klist.h>
 #include <htslib/khash_str2int.h>
-#include "sam_header.h"
+#include <htslib/cram.h>
 #include "samtools.h"
+#include "bedidx.h"
 #include "sam_opts.h"
+#include "bam_plbuf.h"
 
-static inline int printw(int c, FILE *fp)
-{
-    char buf[16];
-    int l, x;
-    if (c == 0) return fputc('0', fp);
-    for (l = 0, x = c < 0? -c : c; x > 0; x /= 10) buf[l++] = x%10 + '0';
-    if (c < 0) buf[l++] = '-';
-    buf[l] = 0;
-    for (x = 0; x < l/2; ++x) {
-        int y = buf[x]; buf[x] = buf[l-1-x]; buf[l-1-x] = y;
-    }
-    fputs(buf, fp);
-    return 0;
-}
+#define dummy_free(p)
+KLIST_INIT(auxlist, char *, dummy_free)
 
-static inline void pileup_seq(FILE *fp, const bam_pileup1_t *p, int pos, int ref_len, const char *ref)
+int pileup_seq(kstring_t *ks_seq, const bam_pileup1_t *p, hts_pos_t pos,
+               hts_pos_t ref_len, const char *ref, kstring_t *ks_mod,
+               int rev_del, int no_ins, int no_ins_mods,
+               int no_del, int no_ends)
 {
-    int j;
-    if (p->is_head) {
-        putc('^', fp);
-        putc(p->b->core.qual > 93? 126 : p->b->core.qual + 33, fp);
+    no_ins_mods |= no_ins;
+    int j, err = 0;
+    hts_base_mod_state *m = p->cd.p;
+    if (!no_ends && p->is_head) {
+        err |= kputc_('^', ks_seq) < 0;
+        err |= kputc_(p->b->core.qual > 93 ? 126 : p->b->core.qual + 33,
+                      ks_seq) < 0;
     }
     if (!p->is_del) {
+        // See seq_nt16_str in htslib/hts.c
+        const char seq_nt_str_lc[] = ",acmgrsvtwyhkdbn"; // reverse strand
+        const char seq_nt_str_uc[] = ".ACMGRSVTWYHKDBN";
         int c = p->qpos < p->b->core.l_qseq
-            ? seq_nt16_str[bam_seqi(bam_get_seq(p->b), p->qpos)]
-            : 'N';
+            ? bam_seqi(bam_get_seq(p->b), p->qpos)
+            : 15 /*N*/;
         if (ref) {
-            int rb = pos < ref_len? ref[pos] : 'N';
-            if (c == '=' || seq_nt16_table[c] == seq_nt16_table[rb]) c = bam_is_rev(p->b)? ',' : '.';
-            else c = bam_is_rev(p->b)? tolower(c) : toupper(c);
-        } else {
-            if (c == '=') c = bam_is_rev(p->b)? ',' : '.';
-            else c = bam_is_rev(p->b)? tolower(c) : toupper(c);
+            int rb = pos < ref_len
+                ? seq_nt16_table[(uint8_t)(ref[pos])]
+                : 15/*N*/;
+            if (c == rb)
+                c = 0; // "=", which becomes . or ,
         }
-        putc(c, fp);
-    } else putc(p->is_refskip? (bam_is_rev(p->b)? '<' : '>') : '*', fp);
+        c = bam_is_rev(p->b)
+            ? seq_nt_str_lc[c]
+            : seq_nt_str_uc[c];
+        err |= kputc_(c, ks_seq) < 0;
+
+        if (m) {
+            int nm;
+            hts_base_mod mod[256];
+            if ((nm = bam_mods_at_qpos(p->b, p->qpos, m, mod, 256)) > 0) {
+                err |= kputc_('[', ks_seq) < 0;
+                int j;
+                for (j = 0; j < nm && j < 256; j++) {
+                    char qual[20];
+                    if (mod[j].qual >= 0)
+                        sprintf(qual, "%d", mod[j].qual);
+                    else
+                        *qual = 0;
+                    if (mod[j].modified_base < 0)
+                        // ChEBI
+                        err |= ksprintf(ks_seq, "%c(%d)%s",
+                                        "+-"[mod[j].strand],
+                                        -mod[j].modified_base, qual) < 0;
+                    else
+                        err |= ksprintf(ks_seq, "%c%c%s", "+-"[mod[j].strand],
+                                        mod[j].modified_base, qual) < 0;
+                }
+                err |= kputc_(']', ks_seq) < 0;
+            }
+        }
+    } else {
+        err |= kputc_(p->is_refskip
+                      ? (bam_is_rev(p->b)? '<' : '>')
+                      : ((bam_is_rev(p->b) && rev_del) ? '#' : '*'),
+                      ks_seq) < 0;
+    }
+
+    int del_len = -p->indel;
     if (p->indel > 0) {
-        putc('+', fp); printw(p->indel, fp);
-        for (j = 1; j <= p->indel; ++j) {
-            int c = seq_nt16_str[bam_seqi(bam_get_seq(p->b), p->qpos + j)];
-            putc(bam_is_rev(p->b)? tolower(c) : toupper(c), fp);
+        int len = bam_plp_insertion_mod(p, m && !no_ins_mods ? m : NULL,
+                                        ks_mod, &del_len);
+        if (len < 0) {
+            print_error("mpileup", "bam_plp_insertion() failed");
+            return -1;
         }
-    } else if (p->indel < 0) {
-        printw(p->indel, fp);
-        for (j = 1; j <= -p->indel; ++j) {
-            int c = (ref && (int)pos+j < ref_len)? ref[pos+j] : 'N';
-            putc(bam_is_rev(p->b)? tolower(c) : toupper(c), fp);
+        if (no_ins < 2) {
+            err |= kputc_('+', ks_seq) < 0;
+            err |= kputuw(len, ks_seq) < 0;
+        }
+        if (!no_ins) {
+            kstring_t *ks = ks_mod;
+            if (bam_is_rev(p->b)) {
+                char pad = rev_del ? '#' : '*';
+                int in_mod = 0;
+                for (j = 0; j < ks->l; j++) {
+                    if (ks->s[j] == '[') in_mod = 1;
+                    else if (ks->s[j] == ']') in_mod = 0;
+                    err |= kputc_(ks->s[j] != '*'
+                                  ? (in_mod ? ks->s[j] : tolower_c(ks->s[j]))
+                                  : pad, ks_seq) < 0;
+                }
+            } else {
+                int in_mod = 0;
+                for (j = 0; j < ks->l; j++) {
+                    if (ks->s[j] == '[') in_mod = 1;
+                    if (ks->s[j] == ']') in_mod = 0;
+                    err |= kputc_(in_mod ? ks->s[j] : toupper_c(ks->s[j]),
+                                  ks_seq) < 0;
+                }
+            }
         }
     }
-    if (p->is_tail) putc('$', fp);
+
+    if (del_len > 0) {
+        if (no_del < 2)
+            err |= kputw(-del_len, ks_seq) < 0;
+        if (!no_del) {
+            for (j = 1; j <= del_len; ++j) {
+                int c = (ref && (int)pos+j < ref_len)? ref[pos+j] : 'N';
+                err |= kputc_(bam_is_rev(p->b)? tolower_c(c) : toupper_c(c),
+                              ks_seq) < 0;
+            }
+        }
+    }
+
+    if (!no_ends && p->is_tail)
+        err |= kputc_('$', ks_seq) < 0;
+
+    return -err;
 }
 
-#include <assert.h>
-#include "bam2bcf.h"
 #include "sample.h"
 
-#define MPLP_BCF        1
-#define MPLP_VCF        (1<<1)
 #define MPLP_NO_COMP    (1<<2)
 #define MPLP_NO_ORPHAN  (1<<3)
 #define MPLP_REALN      (1<<4)
@@ -110,40 +179,56 @@ static inline void pileup_seq(FILE *fp, const bam_pileup1_t *p, int pos, int ref
 #define MPLP_REDO_BAQ   (1<<6)
 #define MPLP_ILLUMINA13 (1<<7)
 #define MPLP_IGNORE_RG  (1<<8)
-#define MPLP_PRINT_POS  (1<<9)
-#define MPLP_PRINT_MAPQ (1<<10)
-#define MPLP_PER_SAMPLE (1<<11)
-#define MPLP_SMART_OVERLAPS (1<<12)
+#define MPLP_SMART_OVERLAPS (1<<10)
 
-void *bed_read(const char *fn);
-void bed_destroy(void *_h);
-int bed_overlap(const void *_h, const char *chr, int beg, int end);
+#define MPLP_PRINT_MAPQ_CHAR (1<<11)
+#define MPLP_PRINT_QPOS  (1<<12)
+// Start of struct active_cols elements
+#define MPLP_PRINT_QNAME (1<<13)
+#define MPLP_PRINT_FLAG  (1<<14)
+#define MPLP_PRINT_RNAME (1<<15)
+#define MPLP_PRINT_POS   (1<<16)
+#define MPLP_PRINT_MAPQ  (1<<17)
+#define MPLP_PRINT_CIGAR (1<<18)
+#define MPLP_PRINT_RNEXT (1<<19)
+#define MPLP_PRINT_PNEXT (1<<20)
+#define MPLP_PRINT_TLEN  (1<<21)
+#define MPLP_PRINT_SEQ   (1<<22)
+#define MPLP_PRINT_QUAL  (1<<23)
+#define MPLP_PRINT_RLEN  (1<<24)
+// Must occur after struct active_cols element list
+#define MPLP_PRINT_MODS  (1<<25)
+#define MPLP_PRINT_QPOS5 (1<<26)
+
+#define MPLP_PRINT_LAST  (1<<27) // terminator for loop
+
+#define MPLP_MAX_DEPTH 8000
+#define MPLP_MAX_INDEL_DEPTH 250
 
 typedef struct {
-    int min_mq, flag, min_baseQ, capQ_thres, max_depth, max_indel_depth, fmt_flag;
+    int min_mq, flag, min_baseQ, capQ_thres, max_depth, max_indel_depth, all, rev_del;
     int rflag_require, rflag_filter;
-    int openQ, extQ, tandemQ, min_support; // for indels
-    double min_frac; // for indels
     char *reg, *pl_list, *fai_fname, *output_fname;
     faidx_t *fai;
-    void *bed, *rghash;
+    void *bed, *rghash, *auxlist;
     int argc;
     char **argv;
+    char sep, empty, no_ins, no_ins_mods, no_del, no_ends;
     sam_global_args ga;
 } mplp_conf_t;
 
 typedef struct {
-    char *ref[2];
-    int ref_id[2];
-    int ref_len[2];
+    char *ref[3];
+    int ref_id[3];
+    hts_pos_t ref_len[3];
 } mplp_ref_t;
 
-#define MPLP_REF_INIT {{NULL,NULL},{-1,-1},{0,0}}
+#define MPLP_REF_INIT {{NULL,NULL,NULL},{-1,-1,-1},{0,0,0}}
 
 typedef struct {
     samFile *fp;
     hts_itr_t *iter;
-    bam_hdr_t *h;
+    sam_hdr_t *h;
     mplp_ref_t *ref;
     const mplp_conf_t *conf;
 } mplp_aux_t;
@@ -154,7 +239,56 @@ typedef struct {
     bam_pileup1_t **plp;
 } mplp_pileup_t;
 
-static int mplp_get_ref(mplp_aux_t *ma, int tid,  char **ref, int *ref_len) {
+static int build_auxlist(mplp_conf_t *conf, char *optstring) {
+    if (!optstring)
+        return 0;
+
+    void *colhash = khash_str2int_init();
+    if (!colhash)
+        return 1;
+
+    struct active_cols {
+        char *name;
+        int supported;
+    };
+
+    const struct active_cols colnames[12] = {
+            {"QNAME", 1}, {"FLAG", 1}, {"RNAME", 1}, {"POS", 1}, {"MAPQ", 1},
+            {"CIGAR", 0}, {"RNEXT", 1}, {"PNEXT", 1}, {"TLEN", 0}, {"SEQ", 0},
+            {"QUAL", 0},  {"RLEN", 1},
+    };
+
+    int i, f = MPLP_PRINT_QNAME, colno = sizeof(colnames)/sizeof(*colnames);
+    for (i = 0; i < colno; i++, f <<= 1)
+        if (colnames[i].supported)
+            khash_str2int_set(colhash, colnames[i].name, f);
+
+    conf->auxlist = kl_init(auxlist);
+    if (!conf->auxlist)
+        return 1;
+
+    char *save_p;
+    char *tag = strtok_r(optstring, ",", &save_p);
+    while (tag) {
+        if (khash_str2int_get(colhash, tag, &f) == 0) {
+            conf->flag |= f;
+        } else {
+            if (strlen(tag) != 2) {
+                fprintf(samtools_stderr, "[%s] tag '%s' has more than two characters or not supported\n", __func__, tag);
+            } else {
+                char **tag_p = kl_pushp(auxlist, conf->auxlist);
+                *tag_p = tag;
+            }
+        }
+        tag = strtok_r(NULL, ",", &save_p);
+    }
+
+    khash_str2int_destroy(colhash);
+
+    return 0;
+}
+
+static int mplp_get_ref(mplp_aux_t *ma, int tid, char **ref, hts_pos_t *ref_len) {
     mplp_ref_t *r = ma->ref;
 
     //printf("get ref %d {%d/%p, %d/%p}\n", tid, r->ref_id[0], r->ref[0], r->ref_id[1], r->ref[1]);
@@ -166,36 +300,44 @@ static int mplp_get_ref(mplp_aux_t *ma, int tid,  char **ref, int *ref_len) {
 
     // Do we need to reference count this so multiple mplp_aux_t can
     // track which references are in use?
-    // For now we just cache the last two. Sufficient?
-    if (tid == r->ref_id[0]) {
+    // For now we just cache the last three.  This is because we need
+    // current ref and last ref (for -a opt) and mpileup itself may use
+    // current ref and potentially next ref.
+    int x;
+    for (x = 0; x < 3; x++) {
+        if (tid != r->ref_id[x])
+            continue;
+
+        if (x) {
+            // Shuffle element x to element 0 and rotate others up one
+            int tmp_id        = r->ref_id[x];
+            hts_pos_t tmp_len = r->ref_len[x];
+            char *tmp_ref     = r->ref[x];
+
+            // x is 1 (aBc -> Bac) or 2 (abC -> Cab).
+            memmove(&r->ref_id[1],  &r->ref_id[0],  x * sizeof(*r->ref_id));
+            memmove(&r->ref_len[1], &r->ref_len[0], x * sizeof(*r->ref_len));
+            memmove(&r->ref[1],     &r->ref[0],     x * sizeof(*r->ref));
+            r->ref_id[0]  = tmp_id;
+            r->ref_len[0] = tmp_len;
+            r->ref[0]     = tmp_ref;
+        }
         *ref = r->ref[0];
         *ref_len = r->ref_len[0];
         return 1;
     }
-    if (tid == r->ref_id[1]) {
-        // Last, swap over
-        int tmp;
-        tmp = r->ref_id[0];  r->ref_id[0]  = r->ref_id[1];  r->ref_id[1]  = tmp;
-        tmp = r->ref_len[0]; r->ref_len[0] = r->ref_len[1]; r->ref_len[1] = tmp;
 
-        char *tc;
-        tc = r->ref[0]; r->ref[0] = r->ref[1]; r->ref[1] = tc;
-        *ref = r->ref[0];
-        *ref_len = r->ref_len[0];
-        return 1;
-    }
-
-    // New, so migrate to old and load new
-    free(r->ref[1]);
-    r->ref[1]     = r->ref[0];
-    r->ref_id[1]  = r->ref_id[0];
-    r->ref_len[1] = r->ref_len[0];
+    // New, so fill slot zero
+    free(r->ref[2]);
+    memmove(&r->ref_id[1],  &r->ref_id[0],  2 * sizeof(*r->ref_id));
+    memmove(&r->ref_len[1], &r->ref_len[0], 2 * sizeof(*r->ref_len));
+    memmove(&r->ref[1],     &r->ref[0],     2 * sizeof(*r->ref));
 
     r->ref_id[0] = tid;
-    r->ref[0] = faidx_fetch_seq(ma->conf->fai,
-                                ma->h->target_name[r->ref_id[0]],
+    r->ref[0] = faidx_fetch_seq64(ma->conf->fai,
+                                sam_hdr_tid2name(ma->h, r->ref_id[0]),
                                 0,
-                                INT_MAX,
+                                HTS_POS_MAX,
                                 &r->ref_len[0]);
 
     if (!r->ref[0]) {
@@ -211,16 +353,61 @@ static int mplp_get_ref(mplp_aux_t *ma, int tid,  char **ref, int *ref_len) {
     return 1;
 }
 
+// Initialise and destroy the base modifier state data. This is called
+// as each new read is added or removed from the pileups.
+static
+int pileup_cd_create(void *data, const bam1_t *b, bam_pileup_cd *cd) {
+    int ret;
+    hts_base_mod_state *m = hts_base_mod_state_alloc();
+    ret = bam_parse_basemod(b, m);
+    cd->p = m;
+    return ret;
+}
+
+static
+int pileup_cd_destroy(void *data, const bam1_t *b, bam_pileup_cd *cd) {
+    hts_base_mod_state_free(cd->p);
+    return 0;
+}
+
+//returns 0 on success and 1 on error
+static int
+print_empty_pileup(kstring_t *out, const mplp_conf_t *conf, const char *tname,
+                   hts_pos_t pos, int n, const char *ref, hts_pos_t ref_len)
+{
+    int i, err = 0;
+    err |= kputs(tname, out)  < 0;
+    err |= kputc_('\t', out)  < 0;
+    err |= kputll(pos+1, out) < 0;
+    err |= kputc_('\t', out)  < 0;
+    err |= kputc_((ref && pos < ref_len)? ref[pos] : 'N', out) < 0;
+    for (i = 0; i < n; ++i) {
+        err |= kputsn("\t0\t*\t*", 6, out) < 0;
+        int flag_value = MPLP_PRINT_MAPQ_CHAR;
+        while(flag_value < MPLP_PRINT_LAST) {
+            if (flag_value != MPLP_PRINT_MODS && (conf->flag & flag_value))
+                err |= kputsn("\t*", 2, out) < 0;
+            flag_value <<= 1;
+        }
+        if (conf->auxlist) {
+            int t = 0;
+            while(t++ < ((klist_t(auxlist) *)conf->auxlist)->size)
+                err |= kputsn("\t*", 2, out) < 0;
+        }
+    }
+    err |= kputc('\n', out) < 0;
+    return err;
+}
+
 static int mplp_func(void *data, bam1_t *b)
 {
-    extern int bam_realn(bam1_t *b, const char *ref);
-    extern int bam_prob_realn_core(bam1_t *b, const char *ref, int ref_len, int flag);
-    extern int bam_cap_mapQ(bam1_t *b, char *ref, int ref_len, int thres);
     char *ref;
     mplp_aux_t *ma = (mplp_aux_t*)data;
-    int ret, skip = 0, ref_len;
+    int ret, skip = 0;
+    hts_pos_t ref_len;
+    int has_ref = 0, last_tid = -1;
+
     do {
-        int has_ref;
         ret = ma->iter? sam_itr_next(ma->fp, ma->iter, b) : sam_read1(ma->fp, ma->h, b);
         if (ret < 0) break;
         // The 'B' cigar operation is not part of the specification, considering as obsolete.
@@ -231,8 +418,8 @@ static int mplp_func(void *data, bam1_t *b)
         }
         if (ma->conf->rflag_require && !(ma->conf->rflag_require&b->core.flag)) { skip = 1; continue; }
         if (ma->conf->rflag_filter && ma->conf->rflag_filter&b->core.flag) { skip = 1; continue; }
-        if (ma->conf->bed) { // test overlap
-            skip = !bed_overlap(ma->conf->bed, ma->h->target_name[b->core.tid], b->core.pos, bam_endpos(b));
+        if (ma->conf->bed && ma->conf->all == 0) { // test overlap
+            skip = !bed_overlap(ma->conf->bed, sam_hdr_tid2name(ma->h, b->core.tid), b->core.pos, bam_endpos(b));
             if (skip) continue;
         }
         if (ma->conf->rghash) { // exclude read groups
@@ -248,10 +435,13 @@ static int mplp_func(void *data, bam1_t *b)
         }
 
         if (ma->conf->fai && b->core.tid >= 0) {
-            has_ref = mplp_get_ref(ma, b->core.tid, &ref, &ref_len);
+            if (!has_ref || last_tid != b->core.tid) {
+                has_ref = mplp_get_ref(ma, b->core.tid, &ref, &ref_len);
+                last_tid = b->core.tid;
+            }
             if (has_ref && ref_len <= b->core.pos) { // exclude reads outside of the reference sequence
-                fprintf(pysam_stderr,"[%s] Skipping because %d is outside of %d [ref:%d]\n",
-                        __func__, b->core.pos, ref_len, b->core.tid);
+                fprintf(samtools_stderr,"[%s] Skipping because %"PRIhts_pos" is outside of %"PRIhts_pos" [ref:%d]\n",
+                        __func__, (int64_t) b->core.pos, ref_len, b->core.tid);
                 skip = 1;
                 continue;
             }
@@ -260,9 +450,9 @@ static int mplp_func(void *data, bam1_t *b)
         }
 
         skip = 0;
-        if (has_ref && (ma->conf->flag&MPLP_REALN)) bam_prob_realn_core(b, ref, ref_len, (ma->conf->flag & MPLP_REDO_BAQ)? 7 : 3);
+        if (has_ref && (ma->conf->flag&MPLP_REALN)) sam_prob_realn(b, ref, ref_len, (ma->conf->flag & MPLP_REDO_BAQ)? 7 : 3);
         if (has_ref && ma->conf->capQ_thres > 10) {
-            int q = bam_cap_mapQ(b, ref, ref_len, ma->conf->capQ_thres);
+            int q = sam_cap_mapq(b, ref, ref_len, ma->conf->capQ_thres);
             if (q < 0) skip = 1;
             else if (b->core.qual > q) b->core.qual = q;
         }
@@ -272,58 +462,24 @@ static int mplp_func(void *data, bam1_t *b)
     return ret;
 }
 
-static void group_smpl(mplp_pileup_t *m, bam_sample_t *sm, kstring_t *buf,
-                       int n, char *const*fn, int *n_plp, const bam_pileup1_t **plp, int ignore_rg)
-{
-    int i, j;
-    memset(m->n_plp, 0, m->n * sizeof(int));
-    for (i = 0; i < n; ++i) {
-        for (j = 0; j < n_plp[i]; ++j) {
-            const bam_pileup1_t *p = plp[i] + j;
-            uint8_t *q;
-            int id = -1;
-            q = ignore_rg? NULL : bam_aux_get(p->b, "RG");
-            if (q) id = bam_smpl_rg2smid(sm, fn[i], (char*)q+1, buf);
-            if (id < 0) id = bam_smpl_rg2smid(sm, fn[i], 0, buf);
-            if (id < 0 || id >= m->n) {
-                assert(q); // otherwise a bug
-                fprintf(pysam_stderr, "[%s] Read group %s used in file %s but absent from the header or an alignment missing read group.\n", __func__, (char*)q+1, fn[i]);
-                exit(EXIT_FAILURE);
-            }
-            if (m->n_plp[id] == m->m_plp[id]) {
-                m->m_plp[id] = m->m_plp[id]? m->m_plp[id]<<1 : 8;
-                m->plp[id] = realloc(m->plp[id], sizeof(bam_pileup1_t) * m->m_plp[id]);
-            }
-            m->plp[id][m->n_plp[id]++] = *p;
-        }
-    }
-}
-
 /*
  * Performs pileup
  * @param conf configuration for this pileup
  * @param n number of files specified in fn
  * @param fn filenames
+ * @param fn_idx index filenames
  */
-static int mpileup(mplp_conf_t *conf, int n, char **fn)
+static int mpileup(mplp_conf_t *conf, int nfn, char **fn, char **fn_idx)
 {
-    extern void *bcf_call_add_rg(void *rghash, const char *hdtext, const char *list);
-    extern void bcf_call_del_rghash(void *rghash);
     mplp_aux_t **data;
-    int i, tid, pos, *n_plp, beg0 = 0, end0 = INT_MAX, ref_len, max_depth, max_indel_depth;
+    int i, tid, *n_plp, tid0 = 0, max_depth;
+    hts_pos_t pos, beg0 = 0, end0 = HTS_POS_MAX, ref_len;
     const bam_pileup1_t **plp;
     mplp_ref_t mp_ref = MPLP_REF_INIT;
     bam_mplp_t iter;
-    bam_hdr_t *h = NULL; /* header of first file in input list */
+    sam_hdr_t *h = NULL; /* header of first file in input list */
     char *ref;
-    void *rghash = NULL;
     FILE *pileup_fp = NULL;
-
-    bcf_callaux_t *bca = NULL;
-    bcf_callret1_t *bcr = NULL;
-    bcf_call_t bc;
-    htsFile *bcf_fp = NULL;
-    bcf_hdr_t *bcf_hdr = NULL;
 
     bam_sample_t *sm = NULL;
     kstring_t buf;
@@ -331,57 +487,73 @@ static int mpileup(mplp_conf_t *conf, int n, char **fn)
 
     memset(&gplp, 0, sizeof(mplp_pileup_t));
     memset(&buf, 0, sizeof(kstring_t));
-    memset(&bc, 0, sizeof(bcf_call_t));
-    data = calloc(n, sizeof(mplp_aux_t*));
-    plp = calloc(n, sizeof(bam_pileup1_t*));
-    n_plp = calloc(n, sizeof(int));
+    data = calloc(nfn, sizeof(mplp_aux_t*));
+    plp = calloc(nfn, sizeof(bam_pileup1_t*));
+    n_plp = calloc(nfn, sizeof(int));
     sm = bam_smpl_init();
 
-    if (n == 0) {
-        fprintf(pysam_stderr,"[%s] no input file/data given\n", __func__);
-        exit(EXIT_FAILURE);
+    if (nfn == 0) {
+        fprintf(samtools_stderr,"[%s] no input file/data given\n", __func__);
+        samtools_exit(EXIT_FAILURE);
     }
 
     // read the header of each file in the list and initialize data
-    for (i = 0; i < n; ++i) {
-        bam_hdr_t *h_tmp;
+    refs_t *refs = NULL;
+    for (i = 0; i < nfn; ++i) {
+        sam_hdr_t *h_tmp;
         data[i] = calloc(1, sizeof(mplp_aux_t));
         data[i]->fp = sam_open_format(fn[i], "rb", &conf->ga.in);
         if ( !data[i]->fp )
         {
-            fprintf(pysam_stderr, "[%s] failed to open %s: %s\n", __func__, fn[i], strerror(errno));
-            exit(EXIT_FAILURE);
+            fprintf(samtools_stderr, "[%s] failed to open %s: %s\n", __func__, fn[i], strerror(errno));
+            samtools_exit(EXIT_FAILURE);
         }
         if (hts_set_opt(data[i]->fp, CRAM_OPT_DECODE_MD, 0)) {
-            fprintf(pysam_stderr, "Failed to set CRAM_OPT_DECODE_MD value\n");
-            exit(EXIT_FAILURE);
+            fprintf(samtools_stderr, "Failed to set CRAM_OPT_DECODE_MD value\n");
+            samtools_exit(EXIT_FAILURE);
         }
-        if (conf->fai_fname && hts_set_fai_filename(data[i]->fp, conf->fai_fname) != 0) {
-            fprintf(pysam_stderr, "[%s] failed to process %s: %s\n",
-                    __func__, conf->fai_fname, strerror(errno));
-            exit(EXIT_FAILURE);
+
+        if (!refs && conf->fai_fname) {
+            if (hts_set_fai_filename(data[i]->fp, conf->fai_fname) != 0) {
+                fprintf(samtools_stderr, "[%s] failed to process %s: %s\n",
+                        __func__, conf->fai_fname, strerror(errno));
+                samtools_exit(EXIT_FAILURE);
+            }
+            refs = cram_get_refs(data[i]->fp);
+        } else if (conf->fai_fname) {
+            if (hts_set_opt(data[i]->fp, CRAM_OPT_SHARED_REF, refs) != 0) {
+                fprintf(samtools_stderr, "[%s] failed to process %s: %s\n",
+                        __func__, conf->fai_fname, strerror(errno));
+                samtools_exit(EXIT_FAILURE);
+            }
         }
+
         data[i]->conf = conf;
         data[i]->ref = &mp_ref;
         h_tmp = sam_hdr_read(data[i]->fp);
         if ( !h_tmp ) {
-            fprintf(pysam_stderr,"[%s] fail to read the header of %s\n", __func__, fn[i]);
-            exit(EXIT_FAILURE);
+            fprintf(samtools_stderr,"[%s] fail to read the header of %s\n", __func__, fn[i]);
+            samtools_exit(EXIT_FAILURE);
         }
-        bam_smpl_add(sm, fn[i], (conf->flag&MPLP_IGNORE_RG)? 0 : h_tmp->text);
-        // Collect read group IDs with PL (platform) listed in pl_list (note: fragile, strstr search)
-        rghash = bcf_call_add_rg(rghash, h_tmp->text, conf->pl_list);
+        bam_smpl_add(sm, fn[i], (conf->flag&MPLP_IGNORE_RG)? 0 : sam_hdr_str(h_tmp));
         if (conf->reg) {
-            hts_idx_t *idx = sam_index_load(data[i]->fp, fn[i]);
+            hts_idx_t *idx = NULL;
+            // If index filename has not been specfied, look in BAM folder
+            if (fn_idx != NULL)  {
+                idx = sam_index_load2(data[i]->fp, fn[i], fn_idx[i]);
+            } else {
+                idx = sam_index_load(data[i]->fp, fn[i]);
+            }
+
             if (idx == NULL) {
-                fprintf(pysam_stderr, "[%s] fail to load index for %s\n", __func__, fn[i]);
-                exit(EXIT_FAILURE);
+                fprintf(samtools_stderr, "[%s] fail to load index for %s\n", __func__, fn[i]);
+                samtools_exit(EXIT_FAILURE);
             }
             if ( (data[i]->iter=sam_itr_querys(idx, h_tmp, conf->reg)) == 0) {
-                fprintf(pysam_stderr, "[E::%s] fail to parse region '%s' with %s\n", __func__, conf->reg, fn[i]);
-                exit(EXIT_FAILURE);
+                fprintf(samtools_stderr, "[E::%s] fail to parse region '%s' with %s\n", __func__, conf->reg, fn[i]);
+                samtools_exit(EXIT_FAILURE);
             }
-            if (i == 0) beg0 = data[i]->iter->beg, end0 = data[i]->iter->end;
+            if (i == 0) beg0 = data[i]->iter->beg, end0 = data[i]->iter->end, tid0 = data[i]->iter->tid;
             hts_idx_destroy(idx);
         }
         else
@@ -390,289 +562,368 @@ static int mpileup(mplp_conf_t *conf, int n, char **fn)
         if (i == 0) h = data[i]->h = h_tmp; // save the header of the first file
         else {
             // FIXME: check consistency between h and h_tmp
-            bam_hdr_destroy(h_tmp);
+            sam_hdr_destroy(h_tmp);
 
             // we store only the first file's header; it's (alleged to be)
             // compatible with the i-th file's target_name lookup needs
             data[i]->h = h;
         }
     }
-    // allocate data storage proportionate to number of samples being studied sm->n
-    gplp.n = sm->n;
-    gplp.n_plp = calloc(sm->n, sizeof(int));
-    gplp.m_plp = calloc(sm->n, sizeof(int));
-    gplp.plp = calloc(sm->n, sizeof(bam_pileup1_t*));
+    fprintf(samtools_stderr, "[%s] %d samples in %d input files\n",
+            __func__, sm->n, nfn);
 
-    fprintf(pysam_stderr, "[%s] %d samples in %d input files\n", __func__, sm->n, n);
-    // write the VCF header
-    if (conf->flag & MPLP_BCF)
-    {
-        const char *mode;
-        if ( conf->flag & MPLP_VCF )
-            mode = (conf->flag&MPLP_NO_COMP)? "wu" : "wz";   // uncompressed VCF or compressed VCF
-        else
-            mode = (conf->flag&MPLP_NO_COMP)? "wub" : "wb";  // uncompressed BCF or compressed BCF
+    pileup_fp = conf->output_fname? fopen(conf->output_fname, "w") : samtools_stdout;
 
-        bcf_fp = bcf_open(conf->output_fname? conf->output_fname : "-", mode);
-        if (bcf_fp == NULL) {
-            fprintf(pysam_stderr, "[%s] failed to write to %s: %s\n", __func__, conf->output_fname? conf->output_fname : "standard output", strerror(errno));
-            exit(EXIT_FAILURE);
-        }
-
-        // BCF header creation
-        bcf_hdr = bcf_hdr_init("w");
-        kstring_t str = {0,0,NULL};
-
-        ksprintf(&str, "##samtoolsVersion=%s+htslib-%s\n",samtools_version(),hts_version());
-        bcf_hdr_append(bcf_hdr, str.s);
-
-        str.l = 0;
-        ksprintf(&str, "##samtoolsCommand=samtools mpileup");
-        for (i=1; i<conf->argc; i++) ksprintf(&str, " %s", conf->argv[i]);
-        kputc('\n', &str);
-        bcf_hdr_append(bcf_hdr, str.s);
-
-        if (conf->fai_fname)
-        {
-            str.l = 0;
-            ksprintf(&str, "##reference=file://%s\n", conf->fai_fname);
-            bcf_hdr_append(bcf_hdr, str.s);
-        }
-
-        // Translate BAM @SQ tags to BCF ##contig tags
-        // todo: use/write new BAM header manipulation routines, fill also UR, M5
-        for (i=0; i<h->n_targets; i++)
-        {
-            str.l = 0;
-            ksprintf(&str, "##contig=<ID=%s,length=%d>", h->target_name[i], h->target_len[i]);
-            bcf_hdr_append(bcf_hdr, str.s);
-        }
-        free(str.s);
-        bcf_hdr_append(bcf_hdr,"##ALT=<ID=*,Description=\"Represents allele(s) other than observed.\">");
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=INDEL,Number=0,Type=Flag,Description=\"Indicates that the variant is an INDEL.\">");
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=IDV,Number=1,Type=Integer,Description=\"Maximum number of reads supporting an indel\">");
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=IMF,Number=1,Type=Float,Description=\"Maximum fraction of reads supporting an indel\">");
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Raw read depth\">");
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=VDB,Number=1,Type=Float,Description=\"Variant Distance Bias for filtering splice-site artefacts in RNA-seq data (bigger is better)\",Version=\"3\">");
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=RPB,Number=1,Type=Float,Description=\"Mann-Whitney U test of Read Position Bias (bigger is better)\">");
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=MQB,Number=1,Type=Float,Description=\"Mann-Whitney U test of Mapping Quality Bias (bigger is better)\">");
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=BQB,Number=1,Type=Float,Description=\"Mann-Whitney U test of Base Quality Bias (bigger is better)\">");
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=MQSB,Number=1,Type=Float,Description=\"Mann-Whitney U test of Mapping Quality vs Strand Bias (bigger is better)\">");
-#if CDF_MWU_TESTS
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=RPB2,Number=1,Type=Float,Description=\"Mann-Whitney U test of Read Position Bias [CDF] (bigger is better)\">");
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=MQB2,Number=1,Type=Float,Description=\"Mann-Whitney U test of Mapping Quality Bias [CDF] (bigger is better)\">");
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=BQB2,Number=1,Type=Float,Description=\"Mann-Whitney U test of Base Quality Bias [CDF] (bigger is better)\">");
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=MQSB2,Number=1,Type=Float,Description=\"Mann-Whitney U test of Mapping Quality vs Strand Bias [CDF] (bigger is better)\">");
-#endif
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=SGB,Number=1,Type=Float,Description=\"Segregation based metric.\">");
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=MQ0F,Number=1,Type=Float,Description=\"Fraction of MQ0 reads (smaller is better)\">");
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=I16,Number=16,Type=Float,Description=\"Auxiliary tag used for calling, see description of bcf_callret1_t in bam2bcf.h\">");
-        bcf_hdr_append(bcf_hdr,"##INFO=<ID=QS,Number=R,Type=Float,Description=\"Auxiliary tag used for calling\">");
-        bcf_hdr_append(bcf_hdr,"##FORMAT=<ID=PL,Number=G,Type=Integer,Description=\"List of Phred-scaled genotype likelihoods\">");
-        if ( conf->fmt_flag&B2B_FMT_DP )
-            bcf_hdr_append(bcf_hdr,"##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Number of high-quality bases\">");
-        if ( conf->fmt_flag&B2B_FMT_DV )
-            bcf_hdr_append(bcf_hdr,"##FORMAT=<ID=DV,Number=1,Type=Integer,Description=\"Number of high-quality non-reference bases\">");
-        if ( conf->fmt_flag&B2B_FMT_DPR )
-            bcf_hdr_append(bcf_hdr,"##FORMAT=<ID=DPR,Number=R,Type=Integer,Description=\"Number of high-quality bases observed for each allele\">");
-        if ( conf->fmt_flag&B2B_INFO_DPR )
-            bcf_hdr_append(bcf_hdr,"##INFO=<ID=DPR,Number=R,Type=Integer,Description=\"Number of high-quality bases observed for each allele\">");
-        if ( conf->fmt_flag&B2B_FMT_DP4 )
-            bcf_hdr_append(bcf_hdr,"##FORMAT=<ID=DP4,Number=4,Type=Integer,Description=\"Number of high-quality ref-fwd, ref-reverse, alt-fwd and alt-reverse bases\">");
-        if ( conf->fmt_flag&B2B_FMT_SP )
-            bcf_hdr_append(bcf_hdr,"##FORMAT=<ID=SP,Number=1,Type=Integer,Description=\"Phred-scaled strand bias P-value\">");
-        if ( conf->fmt_flag&B2B_FMT_AD )
-            bcf_hdr_append(bcf_hdr,"##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"Allelic depths\">");
-        if ( conf->fmt_flag&B2B_FMT_ADF )
-            bcf_hdr_append(bcf_hdr,"##FORMAT=<ID=ADF,Number=R,Type=Integer,Description=\"Allelic depths on the forward strand\">");
-        if ( conf->fmt_flag&B2B_FMT_ADR )
-            bcf_hdr_append(bcf_hdr,"##FORMAT=<ID=ADR,Number=R,Type=Integer,Description=\"Allelic depths on the reverse strand\">");
-        if ( conf->fmt_flag&B2B_INFO_AD )
-            bcf_hdr_append(bcf_hdr,"##INFO=<ID=AD,Number=R,Type=Integer,Description=\"Total allelic depths\">");
-        if ( conf->fmt_flag&B2B_INFO_ADF )
-            bcf_hdr_append(bcf_hdr,"##INFO=<ID=ADF,Number=R,Type=Integer,Description=\"Total allelic depths on the forward strand\">");
-        if ( conf->fmt_flag&B2B_INFO_ADR )
-            bcf_hdr_append(bcf_hdr,"##INFO=<ID=ADR,Number=R,Type=Integer,Description=\"Total allelic depths on the reverse strand\">");
-
-        for (i=0; i<sm->n; i++)
-            bcf_hdr_add_sample(bcf_hdr, sm->smpl[i]);
-        bcf_hdr_add_sample(bcf_hdr, NULL);
-        bcf_hdr_write(bcf_fp, bcf_hdr);
-        // End of BCF header creation
-
-        // Initialise the calling algorithm
-        bca = bcf_call_init(-1., conf->min_baseQ);
-        bcr = calloc(sm->n, sizeof(bcf_callret1_t));
-        bca->rghash = rghash;
-        bca->openQ = conf->openQ, bca->extQ = conf->extQ, bca->tandemQ = conf->tandemQ;
-        bca->min_frac = conf->min_frac;
-        bca->min_support = conf->min_support;
-        bca->per_sample_flt = conf->flag & MPLP_PER_SAMPLE;
-
-        bc.bcf_hdr = bcf_hdr;
-        bc.n = sm->n;
-        bc.PL = malloc(15 * sm->n * sizeof(*bc.PL));
-        if (conf->fmt_flag)
-        {
-            assert( sizeof(float)==sizeof(int32_t) );
-            bc.DP4 = malloc(sm->n * sizeof(int32_t) * 4);
-            bc.fmt_arr = malloc(sm->n * sizeof(float)); // all fmt_flag fields
-            if ( conf->fmt_flag&(B2B_INFO_DPR|B2B_FMT_DPR|B2B_INFO_AD|B2B_INFO_ADF|B2B_INFO_ADR|B2B_FMT_AD|B2B_FMT_ADF|B2B_FMT_ADR) )
-            {
-                // first B2B_MAX_ALLELES fields for total numbers, the rest per-sample
-                bc.ADR = (int32_t*) malloc((sm->n+1)*B2B_MAX_ALLELES*sizeof(int32_t));
-                bc.ADF = (int32_t*) malloc((sm->n+1)*B2B_MAX_ALLELES*sizeof(int32_t));
-                for (i=0; i<sm->n; i++)
-                {
-                    bcr[i].ADR = bc.ADR + (i+1)*B2B_MAX_ALLELES;
-                    bcr[i].ADF = bc.ADF + (i+1)*B2B_MAX_ALLELES;
-                }
-            }
-        }
-    }
-    else {
-        pileup_fp = conf->output_fname? fopen(conf->output_fname, "w") : pysam_stdout;
-
-        if (pileup_fp == NULL) {
-            fprintf(pysam_stderr, "[%s] failed to write to %s: %s\n", __func__, conf->output_fname, strerror(errno));
-            exit(EXIT_FAILURE);
-        }
+    if (pileup_fp == NULL) {
+        fprintf(samtools_stderr, "[%s] failed to write to %s: %s\n", __func__, conf->output_fname, strerror(errno));
+        samtools_exit(EXIT_FAILURE);
     }
 
     // init pileup
-    iter = bam_mplp_init(n, mplp_func, (void**)data);
-    if ( conf->flag & MPLP_SMART_OVERLAPS ) bam_mplp_init_overlaps(iter);
-    max_depth = conf->max_depth;
-    if (max_depth * sm->n > 1<<20)
-        fprintf(pysam_stderr, "(%s) Max depth is above 1M. Potential memory hog!\n", __func__);
-    if (max_depth * sm->n < 8000) {
-        max_depth = 8000 / sm->n;
-        fprintf(pysam_stderr, "<%s> Set max per-file depth to %d\n", __func__, max_depth);
+    iter = bam_mplp_init(nfn, mplp_func, (void**)data);
+    if (conf->flag & MPLP_PRINT_MODS) {
+        bam_mplp_constructor(iter, pileup_cd_create);
+        bam_mplp_destructor(iter, pileup_cd_destroy);
     }
-    max_indel_depth = conf->max_indel_depth * sm->n;
+    if ( conf->flag & MPLP_SMART_OVERLAPS ) bam_mplp_init_overlaps(iter);
+    if ( !conf->max_depth ) {
+        max_depth = INT_MAX;
+        fprintf(samtools_stderr, "[%s] Max depth set to maximum value (%d)\n", __func__, INT_MAX);
+    } else {
+        max_depth = conf->max_depth;
+        if ( max_depth * nfn > 1<<20 )
+            fprintf(samtools_stderr, "[%s] Combined max depth is above 1M. Potential memory hog!\n", __func__);
+    }
+
+
     bam_mplp_set_maxcnt(iter, max_depth);
-    bcf1_t *bcf_rec = bcf_init1();
-    int ret;
+    int ret, err = 0;
+    int last_tid = -1, got_ref = 0;
+    hts_pos_t last_pos = -1;
+    int one_seq = 0;
+
     // begin pileup
-    while ( (ret=bam_mplp_auto(iter, &tid, &pos, n_plp, plp)) > 0) {
+    kstring_t ks_seq = KS_INITIALIZE;
+    kstring_t ks_mod = KS_INITIALIZE;
+    kstring_t ks_qual = KS_INITIALIZE;
+    while ( (ret=bam_mplp64_auto(iter, &tid, &pos, n_plp, plp)) > 0) {
+        one_seq = 1; // at least 1 output
         if (conf->reg && (pos < beg0 || pos >= end0)) continue; // out of the region requested
-        if (conf->bed && tid >= 0 && !bed_overlap(conf->bed, h->target_name[tid], pos, pos+1)) continue;
-        mplp_get_ref(data[0], tid, &ref, &ref_len);
-        //printf("tid=%d len=%d ref=%p/%s\n", tid, ref_len, ref, ref);
-        if (conf->flag & MPLP_BCF) {
-            int total_depth, _ref0, ref16;
-            for (i = total_depth = 0; i < n; ++i) total_depth += n_plp[i];
-            group_smpl(&gplp, sm, &buf, n, fn, n_plp, plp, conf->flag & MPLP_IGNORE_RG);
-            _ref0 = (ref && pos < ref_len)? ref[pos] : 'N';
-            ref16 = seq_nt16_table[_ref0];
-            bcf_callaux_clean(bca, &bc);
-            for (i = 0; i < gplp.n; ++i)
-                bcf_call_glfgen(gplp.n_plp[i], gplp.plp[i], ref16, bca, bcr + i);
-            bc.tid = tid; bc.pos = pos;
-            bcf_call_combine(gplp.n, bcr, bca, ref16, &bc);
-            bcf_clear1(bcf_rec);
-            bcf_call2bcf(&bc, bcf_rec, bcr, conf->fmt_flag, 0, 0);
-            bcf_write1(bcf_fp, bcf_hdr, bcf_rec);
-            // call indels; todo: subsampling with total_depth>max_indel_depth instead of ignoring?
-            if (!(conf->flag&MPLP_NO_INDEL) && total_depth < max_indel_depth && bcf_call_gap_prep(gplp.n, gplp.n_plp, gplp.plp, pos, bca, ref, rghash) >= 0)
-            {
-                bcf_callaux_clean(bca, &bc);
-                for (i = 0; i < gplp.n; ++i)
-                    bcf_call_glfgen(gplp.n_plp[i], gplp.plp[i], -1, bca, bcr + i);
-                if (bcf_call_combine(gplp.n, bcr, bca, -1, &bc) >= 0) {
-                    bcf_clear1(bcf_rec);
-                    bcf_call2bcf(&bc, bcf_rec, bcr, conf->fmt_flag, bca, ref);
-                    bcf_write1(bcf_fp, bcf_hdr, bcf_rec);
+        if (conf->all) {
+            // Deal with missing portions of previous tids
+            while (tid > last_tid) {
+                if (last_tid >= 0 && !conf->reg) {
+                    while (++last_pos < sam_hdr_tid2len(h, last_tid)) {
+                        if (conf->bed && bed_overlap(conf->bed, sam_hdr_tid2name(h, last_tid), last_pos, last_pos + 1) == 0)
+                            continue;
+                        if (print_empty_pileup(&buf, conf, sam_hdr_tid2name(h, last_tid), last_pos, nfn, ref, ref_len)) {
+                            fprintf(samtools_stderr, "Failed to make empty pileup, tid %d, pos %"PRIhts_pos".\n", last_tid, last_pos);
+                            goto fail;
+                        }
+                        if (buf.l != fwrite(buf.s, 1, buf.l, pileup_fp)) {
+                            fprintf(samtools_stderr, "Failed to write pileup data.\n");
+                            goto fail;
+                        }
+                        ks_clear(&buf);
+                    }
+                }
+                last_tid++;
+                got_ref = 0;
+                last_pos = -1;
+                if (conf->all < 2)
+                    break;
+                if (tid > last_tid)
+                    // multiple missing references and -aa used
+                    got_ref = mplp_get_ref(data[0], last_tid, &ref, &ref_len);
+            }
+        }
+        if (!got_ref || last_tid != tid) {
+            got_ref = mplp_get_ref(data[0], tid, &ref, &ref_len);
+            last_tid = tid;
+        }
+
+        if (conf->all) {
+            // Deal with missing portion of current tid
+            while (++last_pos < pos) {
+                if (conf->reg && last_pos < beg0) continue; // out of range; skip
+                if (conf->bed && bed_overlap(conf->bed, sam_hdr_tid2name(h, tid), last_pos, last_pos + 1) == 0)
+                    continue;
+                if (print_empty_pileup(&buf, conf, sam_hdr_tid2name(h, tid), last_pos, nfn, ref, ref_len)) {
+                    fprintf(samtools_stderr, "Failed to make empty pileup, tid %d, pos %"PRIhts_pos".\n", tid, last_pos);
+                    goto fail;
+                }
+                if (buf.l != fwrite(buf.s, 1, buf.l, pileup_fp)) {
+                    fprintf(samtools_stderr, "Failed to write pileup data.\n");
+                    goto fail;
+                }
+                ks_clear(&buf);
+            }
+            last_pos = pos;
+        }
+        if (conf->bed && tid >= 0 && !bed_overlap(conf->bed, sam_hdr_tid2name(h, tid), pos, pos+1)) continue;
+
+        err |= kputs(sam_hdr_tid2name(h, tid), &buf) < 0;
+        err |= kputc_('\t', &buf) < 0;
+        err |= kputll(pos + 1, &buf) < 0;
+        err |= kputc_('\t', &buf) < 0;
+        err |= kputc_((ref && pos < ref_len)? ref[pos] : 'N', &buf) < 0;
+
+        for (i = 0; i < nfn; ++i) {
+            int j, cnt;
+            ks_clear(&ks_seq);
+            ks_clear(&ks_qual);
+            ks_clear(&ks_mod);
+            for (j = cnt = 0; j < n_plp[i]; ++j) {
+                const bam_pileup1_t *p = plp[i] + j;
+                int c = p->qpos < p->b->core.l_qseq
+                    ? bam_get_qual(p->b)[p->qpos]
+                    : 0;
+                if (c >= conf->min_baseQ) {
+                    // Build up seq
+                    err |= pileup_seq(&ks_seq, plp[i] + j, pos, ref_len,
+                                      ref, &ks_mod, conf->rev_del,
+                                      conf->no_ins, conf->no_ins_mods,
+                                      conf->no_del, conf->no_ends) < 0;
+
+                    // Build up qual
+                    err |= kputc_(c+33 < 126 ? c+33 : 126, &ks_qual) < 0;
+                    cnt++;
                 }
             }
-        } else {
-            fprintf(pileup_fp, "%s\t%d\t%c", h->target_name[tid], pos + 1, (ref && pos < ref_len)? ref[pos] : 'N');
-            for (i = 0; i < n; ++i) {
-                int j, cnt;
-                for (j = cnt = 0; j < n_plp[i]; ++j) {
-                    const bam_pileup1_t *p = plp[i] + j;
-                    int c = p->qpos < p->b->core.l_qseq
-                             ? bam_get_qual(p->b)[p->qpos]
-                             : 0;
-                    if (c >= conf->min_baseQ) ++cnt;
+            if (err) {
+                ret = 1;
+                goto fail;
+            }
+            err |= kputc_('\t', &buf) < 0;
+            err |= kputw(cnt, &buf) < 0;
+            err |= kputc_('\t', &buf) < 0;
+
+            if (n_plp[i] == 0) {
+                err |= kputsn("*\t*", 3, &buf) < 0;
+                int flag_value = MPLP_PRINT_MAPQ_CHAR;
+                while(flag_value < MPLP_PRINT_LAST) {
+                    if (flag_value != MPLP_PRINT_MODS
+                        && (conf->flag & flag_value))
+                        err |= kputsn("\t*", 2, &buf) < 0;
+                    flag_value <<= 1;
                 }
-                fprintf(pileup_fp, "\t%d\t", cnt);
-                if (n_plp[i] == 0) {
-                    fputs("*\t*", pileup_fp);
-                    if (conf->flag & MPLP_PRINT_MAPQ) fputs("\t*", pileup_fp);
-                    if (conf->flag & MPLP_PRINT_POS) fputs("\t*", pileup_fp);
+                if (conf->auxlist) {
+                    int t = 0;
+                    while(t++ < ((klist_t(auxlist) *)conf->auxlist)->size)
+                        err |= kputsn("\t*", 2, &buf) < 0;
+                }
+            } else {
+                if (ks_seq.l) {
+                    err |= kputsn(ks_seq.s, ks_seq.l, &buf) < 0;
                 } else {
-                    for (j = 0; j < n_plp[i]; ++j) {
-                        const bam_pileup1_t *p = plp[i] + j;
-                        int c = p->qpos < p->b->core.l_qseq
-                            ? bam_get_qual(p->b)[p->qpos]
-                            : 0;
-                        if (c >= conf->min_baseQ)
-                            pileup_seq(pileup_fp, plp[i] + j, pos, ref_len, ref);
-                    }
-                    putc('\t', pileup_fp);
-                    for (j = 0; j < n_plp[i]; ++j) {
-                        const bam_pileup1_t *p = plp[i] + j;
-                        int c = p->qpos < p->b->core.l_qseq
-                            ? bam_get_qual(p->b)[p->qpos]
-                            : 0;
-                        if (c >= conf->min_baseQ) {
-                            c = c + 33 < 126? c + 33 : 126;
-                            putc(c, pileup_fp);
-                        }
-                    }
-                    if (conf->flag & MPLP_PRINT_MAPQ) {
-                        putc('\t', pileup_fp);
+                    err |= kputc_('*', &buf) < 0;
+                }
+                err |= kputc_('\t', &buf) < 0;
+
+                if (ks_qual.l) {
+                    err |= kputsn(ks_qual.s, ks_qual.l, &buf) < 0;
+                } else {
+                    err |= kputc_('*', &buf) < 0;
+                }
+
+                /* Print selected columns */
+                int flag_value = MPLP_PRINT_MAPQ_CHAR;
+                while(flag_value < MPLP_PRINT_LAST) {
+                    if (flag_value != MPLP_PRINT_MODS
+                        && (conf->flag & flag_value)) {
+                        int n = 0;
+                        err |= kputc_('\t', &buf) < 0;
                         for (j = 0; j < n_plp[i]; ++j) {
-                            const bam_pileup1_t *p = plp[i] + j;
-                            int c = bam_get_qual(p->b)[p->qpos];
+                            const bam_pileup1_t *p = &plp[i][j];
+                            int c = p->qpos < p->b->core.l_qseq
+                                ? bam_get_qual(p->b)[p->qpos]
+                                : 0;
                             if ( c < conf->min_baseQ ) continue;
-                            c = plp[i][j].b->core.qual + 33;
-                            if (c > 126) c = 126;
-                            putc(c, pileup_fp);
+                            if (n > 0 && flag_value != MPLP_PRINT_MAPQ_CHAR) err |= kputc_(',', &buf) < 0;
+                            n++;
+
+                            switch (flag_value) {
+                            case MPLP_PRINT_MAPQ_CHAR:
+                                c = p->b->core.qual + 33;
+                                if (c > 126) c = 126;
+                                err |= kputc_(c, &buf) < 0;
+                                break;
+                            case MPLP_PRINT_QPOS:
+                                // query position in current orientation
+                                err |= kputw(p->qpos + 1, &buf) < 0;
+                                break;
+                            case MPLP_PRINT_QPOS5: {
+                                // query position in 5' to 3' orientation
+                                int pos5 = bam_is_rev(p->b)
+                                    ? p->b->core.l_qseq-p->qpos + p->is_del
+                                    : p->qpos + 1;
+                                err |= kputw(pos5, &buf) < 0;
+                                break;
+                            }
+                            case MPLP_PRINT_QNAME:
+                                err |= kputs(bam_get_qname(p->b), &buf) < 0;
+                                break;
+                            case MPLP_PRINT_FLAG:
+                                err |= kputw(p->b->core.flag, &buf) < 0;
+                                break;
+                            case MPLP_PRINT_RNAME:
+                                if (p->b->core.tid >= 0)
+                                    err |= kputs(sam_hdr_tid2name(h, p->b->core.tid), &buf) < 0;
+                                else
+                                    err |= kputc_('*', &buf) < 0;
+                                break;
+                            case MPLP_PRINT_POS:
+                                err |= kputll((int64_t) p->b->core.pos + 1, &buf) < 0;
+                                break;
+                            case MPLP_PRINT_MAPQ:
+                                err |= kputw(p->b->core.qual, &buf) < 0;
+                                break;
+                            case MPLP_PRINT_RNEXT:
+                                if (p->b->core.mtid >= 0)
+                                    err |= kputs(sam_hdr_tid2name(h, p->b->core.mtid), &buf) < 0;
+                                else
+                                    err |= kputc_('*', &buf) < 0;
+                                break;
+                            case MPLP_PRINT_PNEXT:
+                                err |= kputll((int64_t) p->b->core.mpos + 1, &buf) < 0;
+                                break;
+                            case MPLP_PRINT_RLEN:
+                                err |= kputw(p->b->core.l_qseq, &buf) < 0;
+                                break;
+                            }
                         }
+                        if (!n) err |= kputc_('*', &buf) < 0;
                     }
-                    if (conf->flag & MPLP_PRINT_POS) {
-                        putc('\t', pileup_fp);
-                        int last = 0;
+                    flag_value <<= 1;
+                }
+
+                /* Print selected tags */
+                klist_t(auxlist) *auxlist_p = ((klist_t(auxlist) *)conf->auxlist);
+                if (auxlist_p && auxlist_p->size) {
+                    kliter_t(auxlist) *aux;
+                    for (aux = kl_begin(auxlist_p); aux != kl_end(auxlist_p); aux = kl_next(aux)) {
+                        int n = 0; // NB shadows outer loop
+                        err |= kputc_('\t', &buf) < 0;
                         for (j = 0; j < n_plp[i]; ++j) {
-                            const bam_pileup1_t *p = plp[i] + j;
-                            int c = bam_get_qual(p->b)[p->qpos];
+                            const bam_pileup1_t *p = &plp[i][j];
+                            int c = p->qpos < p->b->core.l_qseq
+                                ? bam_get_qual(p->b)[p->qpos]
+                                : 0;
                             if ( c < conf->min_baseQ ) continue;
 
-                            if (last++) putc(',', pileup_fp);
-                            fprintf(pileup_fp, "%d", plp[i][j].qpos + 1); // FIXME: fprintf(pysam_stdout, ) is very slow...
+                            if (n > 0) err |= kputc_(conf->sep, &buf) < 0;
+                            n++;
+                            uint8_t* tag_u = bam_aux_get(p->b, kl_val(aux));
+                            if (!tag_u) {
+                                err |= kputc_(conf->empty , &buf) < 0;
+                                continue;
+                            }
+
+                            int tag_supported = 0;
+
+                            /* Tag value is string */
+                            if (*tag_u == 'Z' || *tag_u == 'H') {
+                                char *tag_s = bam_aux2Z(tag_u);
+                                if (!tag_s) continue;
+                                err |= kputs(tag_s, &buf) < 0;
+                                tag_supported = 1;
+                            }
+
+                            /* Tag value is integer */
+                            if (*tag_u == 'I' || *tag_u == 'i' || *tag_u == 'C' || *tag_u == 'c' || *tag_u == 'S' || *tag_u == 's') {
+                                int64_t tag_i = bam_aux2i(tag_u);
+                                err |= kputll(tag_i, &buf) < 0;
+                                tag_supported = 1;
+                            }
+
+                            /* Tag value is float */
+                            if (*tag_u == 'd' || *tag_u == 'f') {
+                                double tag_f = bam_aux2f(tag_u);
+                                err |= kputd(tag_f, &buf) < 0;
+                                tag_supported = 1;
+                            }
+
+                            /* Tag value is character */
+                            if (*tag_u == 'A') {
+                                char tag_c = bam_aux2A(tag_u);
+                                err |= kputc_(tag_c, &buf) < 0;
+                                tag_supported = 1;
+                            }
+
+                            if (!tag_supported) err |= kputc_('*', &buf) < 0;
                         }
+                        if (!n) err |= kputc_('*', &buf) < 0;
                     }
                 }
             }
-            putc('\n', pileup_fp);
+        }
+        err |= kputc('\n', &buf) < 0;
+        if (err) {
+            fprintf(samtools_stderr, "Failed to format pileup data, tid %d, pos %"PRIhts_pos".\n", tid, pos);
+            goto fail;
+        }
+        if (buf.l != fwrite(buf.s, 1, buf.l, pileup_fp)) {
+            fprintf(samtools_stderr, "Failed to write pileup data.\n");
+            goto fail;
+        }
+        ks_clear(&buf);
+    }
+
+    ks_free(&ks_seq);
+    ks_free(&ks_mod);
+    ks_free(&ks_qual);
+
+    if (ret < 0) {
+        print_error("mpileup", "error reading from input file");
+        ret = EXIT_FAILURE;
+        goto fail;
+    }
+
+    if (conf->all) {
+        // Handle terminating region
+        if (last_tid < 0 && conf->reg && conf->all > 1) {
+            last_tid = tid0;
+            last_pos = beg0-1;
+            mplp_get_ref(data[0], tid0, &ref, &ref_len);
+        } else if (last_tid < 0 && !one_seq && conf->all > 1) {
+            last_tid = 0; // --aa on a blank file
+        }
+        while (last_tid >= 0 && last_tid < sam_hdr_nref(h)) {
+            mplp_get_ref(data[0], last_tid, &ref, &ref_len);
+            while (++last_pos < sam_hdr_tid2len(h, last_tid)) {
+                if (last_pos >= end0) break;
+                if (conf->bed && bed_overlap(conf->bed, sam_hdr_tid2name(h, last_tid), last_pos, last_pos + 1) == 0)
+                    continue;
+                if (print_empty_pileup(&buf, conf, sam_hdr_tid2name(h, last_tid), last_pos, nfn, ref, ref_len)) {
+                    fprintf(samtools_stderr, "Failed to make empty pileup, tid %d, pos %"PRIhts_pos".\n", last_tid, last_pos);
+                    goto fail;
+                }
+                if (buf.l != fwrite(buf.s, 1, buf.l, pileup_fp)) {
+                    fprintf(samtools_stderr, "Failed to write pileup data.\n");
+                    goto fail;
+                }
+                ks_clear(&buf);
+            }
+            last_tid++;
+            last_pos = -1;
+            if (conf->all < 2 || conf->reg)
+                break;
         }
     }
 
+fail:
     // clean up
-    free(bc.tmp.s);
-    bcf_destroy1(bcf_rec);
-    if (bcf_fp)
-    {
-        hts_close(bcf_fp);
-        bcf_hdr_destroy(bcf_hdr);
-        bcf_call_destroy(bca);
-        free(bc.PL);
-        free(bc.DP4);
-        free(bc.ADR);
-        free(bc.ADF);
-        free(bc.fmt_arr);
-        free(bcr);
-    }
+    ks_free(&ks_seq);
+    ks_free(&ks_mod);
+    ks_free(&ks_qual);
+
     if (pileup_fp && conf->output_fname) fclose(pileup_fp);
     bam_smpl_destroy(sm); free(buf.s);
     for (i = 0; i < gplp.n; ++i) free(gplp.plp[i]);
     free(gplp.plp); free(gplp.n_plp); free(gplp.m_plp);
-    bcf_call_del_rghash(rghash);
     bam_mplp_destroy(iter);
-    bam_hdr_destroy(h);
-    for (i = 0; i < n; ++i) {
+    sam_hdr_destroy(h);
+    for (i = 0; i < nfn; ++i) {
         sam_close(data[i]->fp);
         if (data[i]->iter) hts_itr_destroy(data[i]->iter);
         free(data[i]);
@@ -680,7 +931,15 @@ static int mpileup(mplp_conf_t *conf, int n, char **fn)
     free(data); free(plp); free(n_plp);
     free(mp_ref.ref[0]);
     free(mp_ref.ref[1]);
+    free(mp_ref.ref[2]);
     return ret;
+}
+
+static int is_url(const char *s)
+{
+    static const char uri_scheme_chars[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+.-";
+    return s[strspn(s, uri_scheme_chars)] == ':';
 }
 
 #define MAX_PATH_LEN 1024
@@ -697,7 +956,7 @@ int read_file_list(const char *file_list,int *n,char **argv[])
     FILE *fh = fopen(file_list,"r");
     if ( !fh )
     {
-        fprintf(pysam_stderr,"%s: %s\n", file_list,strerror(errno));
+        fprintf(samtools_stderr,"%s: %s\n", file_list,strerror(errno));
         return 1;
     }
 
@@ -707,21 +966,21 @@ int read_file_list(const char *file_list,int *n,char **argv[])
     {
         // allow empty lines and trailing spaces
         len = strlen(buf);
-        while ( len>0 && isspace(buf[len-1]) ) len--;
+        while ( len>0 && isspace_c(buf[len-1]) ) len--;
         if ( !len ) continue;
 
         // check sanity of the file list
         buf[len] = 0;
-        if (stat(buf, &sb) != 0)
+        if (! (is_url(buf) || stat(buf, &sb) == 0))
         {
             // no such file, check if it is safe to print its name
             int i, safe_to_print = 1;
             for (i=0; i<len; i++)
-                if (!isprint(buf[i])) { safe_to_print = 0; break; }
+                if (!isprint_c(buf[i])) { safe_to_print = 0; break; }
             if ( safe_to_print )
-                fprintf(pysam_stderr,"The file list \"%s\" appears broken, could not locate: %s\n", file_list,buf);
+                fprintf(samtools_stderr,"The file list \"%s\" appears broken, could not locate: %s\n", file_list,buf);
             else
-                fprintf(pysam_stderr,"Does the file \"%s\" really contain a list of files and do all exist?\n", file_list);
+                fprintf(samtools_stderr,"Does the file \"%s\" really contain a list of files and do all exist?\n", file_list);
             return 1;
         }
 
@@ -732,7 +991,7 @@ int read_file_list(const char *file_list,int *n,char **argv[])
     fclose(fh);
     if ( !nfiles )
     {
-        fprintf(pysam_stderr,"No files read from %s\n", file_list);
+        fprintf(samtools_stderr,"No files read from %s\n", file_list);
         return 1;
     }
     *argv = files;
@@ -740,35 +999,6 @@ int read_file_list(const char *file_list,int *n,char **argv[])
     return 0;
 }
 #undef MAX_PATH_LEN
-
-int parse_format_flag(const char *str)
-{
-    int i, flag = 0, n_tags;
-    char **tags = hts_readlist(str, 0, &n_tags);
-    for(i=0; i<n_tags; i++)
-    {
-        if ( !strcasecmp(tags[i],"DP") ) flag |= B2B_FMT_DP;
-        else if ( !strcasecmp(tags[i],"DV") ) { flag |= B2B_FMT_DV; fprintf(pysam_stderr, "[warning] tag DV functional, but deprecated. Please switch to `AD` in future.\n"); }
-        else if ( !strcasecmp(tags[i],"SP") ) flag |= B2B_FMT_SP;
-        else if ( !strcasecmp(tags[i],"DP4") ) { flag |= B2B_FMT_DP4; fprintf(pysam_stderr, "[warning] tag DP4 functional, but deprecated. Please switch to `ADF` and `ADR` in future.\n"); }
-        else if ( !strcasecmp(tags[i],"DPR") ) { flag |= B2B_FMT_DPR; fprintf(pysam_stderr, "[warning] tag DPR functional, but deprecated. Please switch to `AD` in future.\n"); }
-        else if ( !strcasecmp(tags[i],"INFO/DPR") ) { flag |= B2B_INFO_DPR; fprintf(pysam_stderr, "[warning] tag INFO/DPR functional, but deprecated. Please switch to `INFO/AD` in future.\n"); }
-        else if ( !strcasecmp(tags[i],"AD") ) flag |= B2B_FMT_AD;
-        else if ( !strcasecmp(tags[i],"ADF") ) flag |= B2B_FMT_ADF;
-        else if ( !strcasecmp(tags[i],"ADR") ) flag |= B2B_FMT_ADR;
-        else if ( !strcasecmp(tags[i],"INFO/AD") ) flag |= B2B_INFO_AD;
-        else if ( !strcasecmp(tags[i],"INFO/ADF") ) flag |= B2B_INFO_ADF;
-        else if ( !strcasecmp(tags[i],"INFO/ADR") ) flag |= B2B_INFO_ADR;
-        else
-        {
-            fprintf(pysam_stderr,"Could not parse tag \"%s\" in \"%s\"\n", tags[i], str);
-            exit(EXIT_FAILURE);
-        }
-        free(tags[i]);
-    }
-    if (n_tags) free(tags);
-    return flag;
-}
 
 static void print_usage(FILE *fp, const mplp_conf_t *mplp)
 {
@@ -801,47 +1031,44 @@ static void print_usage(FILE *fp, const mplp_conf_t *mplp)
     fprintf(fp,
 "  -r, --region REG        region in which pileup is generated\n"
 "  -R, --ignore-RG         ignore RG tags (one BAM = one sample)\n"
-"  --rf, --incl-flags STR|INT  required flags: skip reads with mask bits unset [%s]\n", tmp_require);
+"  --rf, --incl-flags STR|INT\n"
+"                          required flags: only include reads with any of\n"
+"                          the mask bits set [%s]\n", tmp_require);
     fprintf(fp,
-"  --ff, --excl-flags STR|INT  filter flags: skip reads with mask bits set\n"
+"  --ff, --excl-flags STR|INT\n"
+"                          filter flags: skip reads with any of the mask bits set\n"
 "                                            [%s]\n", tmp_filter);
     fprintf(fp,
-"  -x, --ignore-overlaps   disable read-pair overlap detection\n"
+"  -x, --ignore-overlaps-removal, --disable-overlap-removal\n"
+"                          disable read-pair overlap detection and removal\n"
+"  -X, --customized-index  use customized index files\n" // -X flag for index filename
 "\n"
 "Output options:\n"
-"  -o, --output FILE       write output to FILE [standard output]\n"
-"  -g, --BCF               generate genotype likelihoods in BCF format\n"
-"  -v, --VCF               generate genotype likelihoods in VCF format\n"
+"  -o, --output FILE        write output to FILE [standard output]\n"
+"  -O, --output-BP          output base positions on reads, current orientation\n"
+"      --output-BP-5        output base positions on reads, 5' to 3' orientation\n"
+"  -M, --output-mods        output base modifications\n"
+"  -s, --output-MQ          output mapping quality\n"
+"      --output-QNAME       output read names\n"
+"      --output-extra STR   output extra read fields and read tag values\n"
+"      --output-sep CHAR    set the separator character for tag lists [,]\n"
+"      --output-empty CHAR  set the no value character for tag lists [*]\n"
+"      --no-output-ins      skip insertion sequence after +NUM\n"
+"                           Use twice for complete insertion removal\n"
+"      --no-output-ins-mods don't display base modifications within insertions\n"
+"      --no-output-del      skip deletion sequence after -NUM\n"
+"                           Use twice for complete deletion removal\n"
+"      --no-output-ends     remove ^MQUAL and $ markup in sequence column\n"
+"      --reverse-del        use '#' character for deletions on the reverse strand\n"
+"  -a                       output all positions (including zero depth)\n"
+"  -a -a (or -aa)           output absolutely all positions, including unused ref. sequences\n"
 "\n"
-"Output options for mpileup format (without -g/-v):\n"
-"  -O, --output-BP         output base positions on reads\n"
-"  -s, --output-MQ         output mapping quality\n"
-"\n"
-"Output options for genotype likelihoods (when -g/-v is used):\n"
-"  -t, --output-tags LIST  optional tags to output:\n"
-"               DP,AD,ADF,ADR,SP,INFO/AD,INFO/ADF,INFO/ADR []\n"
-"  -u, --uncompressed      generate uncompressed VCF/BCF output\n"
-"\n"
-"SNP/INDEL genotype likelihoods options (effective with -g/-v):\n"
-"  -e, --ext-prob INT      Phred-scaled gap extension seq error probability [%d]\n", mplp->extQ);
-    fprintf(fp,
-"  -F, --gap-frac FLOAT    minimum fraction of gapped reads [%g]\n", mplp->min_frac);
-    fprintf(fp,
-"  -h, --tandem-qual INT   coefficient for homopolymer errors [%d]\n", mplp->tandemQ);
-    fprintf(fp,
-"  -I, --skip-indels       do not perform indel calling\n"
-"  -L, --max-idepth INT    maximum per-file depth for INDEL calling [%d]\n", mplp->max_indel_depth);
-    fprintf(fp,
-"  -m, --min-ireads INT    minimum number gapped reads for indel candidates [%d]\n", mplp->min_support);
-    fprintf(fp,
-"  -o, --open-prob INT     Phred-scaled gap open seq error probability [%d]\n", mplp->openQ);
-    fprintf(fp,
-"  -p, --per-sample-mF     apply -m and -F per-sample for increased sensitivity\n"
-"  -P, --platforms STR     comma separated list of platforms for indels [all]\n");
-    sam_global_opt_help(fp, "-.--.");
-    fprintf(fp,
-"\n"
-"Notes: Assuming diploid individuals.\n");
+"Generic options:\n");
+    sam_global_opt_help(fp, "-.--.--.");
+
+    fprintf(fp, "\n"
+"Note that using \"samtools mpileup\" to generate BCF or VCF files has been\n"
+"removed.  To output these formats, please use \"bcftools mpileup\" instead.\n");
 
     free(tmp_require);
     free(tmp_filter);
@@ -852,29 +1079,32 @@ int bam_mpileup(int argc, char *argv[])
     int c;
     const char *file_list = NULL;
     char **fn = NULL;
-    int nfiles = 0, use_orphan = 0;
+    int nfiles = 0, use_orphan = 0, has_index_file = 0;
     mplp_conf_t mplp;
     memset(&mplp, 0, sizeof(mplp_conf_t));
     mplp.min_baseQ = 13;
     mplp.capQ_thres = 0;
-    mplp.max_depth = 250; mplp.max_indel_depth = 250;
-    mplp.openQ = 40; mplp.extQ = 20; mplp.tandemQ = 100;
-    mplp.min_frac = 0.002; mplp.min_support = 1;
+    mplp.max_depth = MPLP_MAX_DEPTH;
     mplp.flag = MPLP_NO_ORPHAN | MPLP_REALN | MPLP_SMART_OVERLAPS;
     mplp.argc = argc; mplp.argv = argv;
     mplp.rflag_filter = BAM_FUNMAP | BAM_FSECONDARY | BAM_FQCFAIL | BAM_FDUP;
     mplp.output_fname = NULL;
+    mplp.all = 0;
+    mplp.rev_del = 0;
+    mplp.sep = ',';
+    mplp.empty = '*';
     sam_global_args_init(&mplp.ga);
 
     static const struct option lopts[] =
     {
-        SAM_OPT_GLOBAL_OPTIONS('-', 0, '-', '-', 0),
+        SAM_OPT_GLOBAL_OPTIONS('-', 0, '-', '-', 0, '-'),
         {"rf", required_argument, NULL, 1},   // require flag
         {"ff", required_argument, NULL, 2},   // filter flag
         {"incl-flags", required_argument, NULL, 1},
         {"excl-flags", required_argument, NULL, 2},
         {"output", required_argument, NULL, 3},
-        {"open-prob", required_argument, NULL, 4},
+        {"output-QNAME", no_argument, NULL, 5},
+        {"output-qname", no_argument, NULL, 5},
         {"illumina1.3+", no_argument, NULL, '6'},
         {"count-orphans", no_argument, NULL, 'A'},
         {"bam-list", required_argument, NULL, 'b'},
@@ -896,41 +1126,54 @@ int bam_mpileup(int argc, char *argv[])
         {"min-mq", required_argument, NULL, 'q'},
         {"min-BQ", required_argument, NULL, 'Q'},
         {"min-bq", required_argument, NULL, 'Q'},
-        {"ignore-overlaps", no_argument, NULL, 'x'},
-        {"BCF", no_argument, NULL, 'g'},
-        {"bcf", no_argument, NULL, 'g'},
-        {"VCF", no_argument, NULL, 'v'},
-        {"vcf", no_argument, NULL, 'v'},
+        // NB: old "--ignore-overlaps" auto-completes to this
+        {"ignore-overlaps-removal",  no_argument, NULL, 'x'},
+        {"disable-overlap-removal",  no_argument, NULL, 'x'},
+        {"output-mods", no_argument, NULL, 'M'},
         {"output-BP", no_argument, NULL, 'O'},
         {"output-bp", no_argument, NULL, 'O'},
+        {"output-BP-5", no_argument, NULL, 14},
+        {"output-bp-5", no_argument, NULL, 14},
         {"output-MQ", no_argument, NULL, 's'},
         {"output-mq", no_argument, NULL, 's'},
-        {"output-tags", required_argument, NULL, 't'},
-        {"uncompressed", no_argument, NULL, 'u'},
-        {"ext-prob", required_argument, NULL, 'e'},
-        {"gap-frac", required_argument, NULL, 'F'},
-        {"tandem-qual", required_argument, NULL, 'h'},
-        {"skip-indels", no_argument, NULL, 'I'},
-        {"max-idepth", required_argument, NULL, 'L'},
-        {"min-ireads ", required_argument, NULL, 'm'},
-        {"per-sample-mF", no_argument, NULL, 'p'},
-        {"per-sample-mf", no_argument, NULL, 'p'},
-        {"platforms", required_argument, NULL, 'P'},
+        {"customized-index", no_argument, NULL, 'X'},
+        {"reverse-del", no_argument, NULL, 6},
+        {"output-extra", required_argument, NULL, 7},
+        {"output-sep", required_argument, NULL, 8},
+        {"output-empty", required_argument, NULL, 9},
+        {"no-output-ins", no_argument, NULL, 10},
+        {"no-output-ins-mods", no_argument, NULL, 11},
+        {"no-output-del", no_argument, NULL, 12},
+        {"no-output-ends", no_argument, NULL, 13},
         {NULL, 0, NULL, 0}
     };
-    while ((c = getopt_long(argc, argv, "Agf:r:l:q:Q:uRC:BDSd:L:b:P:po:e:h:Im:F:EG:6OsVvxt:",lopts,NULL)) >= 0) {
+
+    while ((c = getopt_long(argc, argv, "Af:r:l:q:Q:RC:Bd:b:o:EG:6OsxXaM",lopts,NULL)) >= 0) {
         switch (c) {
         case 'x': mplp.flag &= ~MPLP_SMART_OVERLAPS; break;
         case  1 :
             mplp.rflag_require = bam_str2flag(optarg);
-            if ( mplp.rflag_require<0 ) { fprintf(pysam_stderr,"Could not parse --rf %s\n", optarg); return 1; }
+            if ( mplp.rflag_require<0 ) { fprintf(samtools_stderr,"Could not parse --rf %s\n", optarg); return 1; }
             break;
         case  2 :
             mplp.rflag_filter = bam_str2flag(optarg);
-            if ( mplp.rflag_filter<0 ) { fprintf(pysam_stderr,"Could not parse --ff %s\n", optarg); return 1; }
+            if ( mplp.rflag_filter<0 ) { fprintf(samtools_stderr,"Could not parse --ff %s\n", optarg); return 1; }
             break;
         case  3 : mplp.output_fname = optarg; break;
-        case  4 : mplp.openQ = atoi(optarg); break;
+        case  5 : mplp.flag |= MPLP_PRINT_QNAME; break;
+        case  6 : mplp.rev_del = 1; break;
+        case  7 :
+            if (build_auxlist(&mplp, optarg) != 0) {
+                fprintf(samtools_stderr,"Could not build aux list using '%s'\n", optarg);
+                return 1;
+            }
+            break;
+        case 8: mplp.sep = optarg[0]; break;
+        case 9: mplp.empty = optarg[0]; break;
+        case 10: mplp.no_ins++; break;
+        case 11: mplp.no_ins_mods = 1; break;
+        case 12: mplp.no_del++; break;
+        case 13: mplp.no_ends = 1; break;
         case 'f':
             mplp.fai = fai_load(optarg);
             if (mplp.fai == NULL) return 1;
@@ -945,56 +1188,38 @@ int bam_mpileup(int argc, char *argv[])
                   mplp.bed = bed_read(optarg);
                   if (!mplp.bed) { print_error_errno("mpileup", "Could not read file \"%s\"", optarg); return 1; }
                   break;
-        case 'P': mplp.pl_list = strdup(optarg); break;
-        case 'p': mplp.flag |= MPLP_PER_SAMPLE; break;
-        case 'g': mplp.flag |= MPLP_BCF; break;
-        case 'v': mplp.flag |= MPLP_BCF | MPLP_VCF; break;
-        case 'u': mplp.flag |= MPLP_NO_COMP | MPLP_BCF; break;
         case 'B': mplp.flag &= ~MPLP_REALN; break;
-        case 'D': mplp.fmt_flag |= B2B_FMT_DP; fprintf(pysam_stderr, "[warning] samtools mpileup option `-D` is functional, but deprecated. Please switch to `-t DP` in future.\n"); break;
-        case 'S': mplp.fmt_flag |= B2B_FMT_SP; fprintf(pysam_stderr, "[warning] samtools mpileup option `-S` is functional, but deprecated. Please switch to `-t SP` in future.\n"); break;
-        case 'V': mplp.fmt_flag |= B2B_FMT_DV; fprintf(pysam_stderr, "[warning] samtools mpileup option `-V` is functional, but deprecated. Please switch to `-t DV` in future.\n"); break;
-        case 'I': mplp.flag |= MPLP_NO_INDEL; break;
+        case 'X': has_index_file = 1; break;
         case 'E': mplp.flag |= MPLP_REDO_BAQ; break;
         case '6': mplp.flag |= MPLP_ILLUMINA13; break;
         case 'R': mplp.flag |= MPLP_IGNORE_RG; break;
-        case 's': mplp.flag |= MPLP_PRINT_MAPQ; break;
-        case 'O': mplp.flag |= MPLP_PRINT_POS; break;
+        case 's': mplp.flag |= MPLP_PRINT_MAPQ_CHAR; break;
+        case 'O': mplp.flag |= MPLP_PRINT_QPOS; break;
+        case  14: mplp.flag |= MPLP_PRINT_QPOS5; break;
+        case 'M': mplp.flag |= MPLP_PRINT_MODS; break;
         case 'C': mplp.capQ_thres = atoi(optarg); break;
         case 'q': mplp.min_mq = atoi(optarg); break;
         case 'Q': mplp.min_baseQ = atoi(optarg); break;
         case 'b': file_list = optarg; break;
-        case 'o': {
-                char *end;
-                long value = strtol(optarg, &end, 10);
-                // Distinguish between -o INT and -o FILE (a bit of a hack!)
-                if (*end == '\0') mplp.openQ = value;
-                else mplp.output_fname = optarg;
-            }
-            break;
-        case 'e': mplp.extQ = atoi(optarg); break;
-        case 'h': mplp.tandemQ = atoi(optarg); break;
+        case 'o': mplp.output_fname = optarg; break;
         case 'A': use_orphan = 1; break;
-        case 'F': mplp.min_frac = atof(optarg); break;
-        case 'm': mplp.min_support = atoi(optarg); break;
-        case 'L': mplp.max_indel_depth = atoi(optarg); break;
         case 'G': {
                 FILE *fp_rg;
                 char buf[1024];
                 mplp.rghash = khash_str2int_init();
                 if ((fp_rg = fopen(optarg, "r")) == NULL)
-                    fprintf(pysam_stderr, "(%s) Fail to open file %s. Continue anyway.\n", __func__, optarg);
+                    fprintf(samtools_stderr, "[%s] Fail to open file %s. Continue anyway.\n", __func__, optarg);
                 while (!feof(fp_rg) && fscanf(fp_rg, "%s", buf) > 0) // this is not a good style, but forgive me...
                     khash_str2int_inc(mplp.rghash, strdup(buf));
                 fclose(fp_rg);
             }
             break;
-        case 't': mplp.fmt_flag |= parse_format_flag(optarg); break;
+        case 'a': mplp.all++; break;
         default:
             if (parse_sam_global_opt(c, optarg, lopts, &mplp.ga) == 0) break;
             /* else fall-through */
         case '?':
-            print_usage(pysam_stderr, &mplp);
+            print_usage(samtools_stderr, &mplp);
             return 1;
         }
     }
@@ -1006,27 +1231,44 @@ int bam_mpileup(int argc, char *argv[])
 
     if ( !(mplp.flag&MPLP_REALN) && mplp.flag&MPLP_REDO_BAQ )
     {
-        fprintf(pysam_stderr,"Error: The -B option cannot be combined with -E\n");
+        fprintf(samtools_stderr,"Error: The -B option cannot be combined with -E\n");
         return 1;
     }
     if (use_orphan) mplp.flag &= ~MPLP_NO_ORPHAN;
     if (argc == 1)
     {
-        print_usage(pysam_stderr, &mplp);
+        print_usage(samtools_stderr, &mplp);
         return 1;
     }
     int ret;
     if (file_list) {
+        if (has_index_file) {
+            fprintf(samtools_stderr,"Error: The -b option cannot be combined with -X\n"); // No customize index loc in file list mode
+            return 1;
+        }
         if ( read_file_list(file_list,&nfiles,&fn) ) return 1;
-        ret = mpileup(&mplp,nfiles,fn);
+        ret = mpileup(&mplp,nfiles,fn,NULL);
         for (c=0; c<nfiles; c++) free(fn[c]);
         free(fn);
     }
-    else
-        ret = mpileup(&mplp, argc - optind, argv + optind);
+    else {
+        if (has_index_file) {
+            if ((argc - optind)%2 !=0) { // Calculate # of input BAM files
+                fprintf(samtools_stderr, "Odd number of filenames detected! Each BAM file should have an index file\n");
+                return 1;
+            }
+            nfiles = (argc - optind)/2;
+            ret = mpileup(&mplp, nfiles, argv + optind, argv + nfiles + optind);
+        } else {
+            nfiles = argc - optind;
+            ret = mpileup(&mplp, nfiles, argv + optind, NULL);
+        }
+    }
     if (mplp.rghash) khash_str2int_destroy_free(mplp.rghash);
     free(mplp.reg); free(mplp.pl_list);
     if (mplp.fai) fai_destroy(mplp.fai);
     if (mplp.bed) bed_destroy(mplp.bed);
+    if (mplp.auxlist) kl_destroy(auxlist, (klist_t(auxlist) *)mplp.auxlist);
+    sam_global_args_free(&mplp.ga);
     return ret;
 }

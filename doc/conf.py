@@ -11,13 +11,15 @@
 # All configuration values have a default; values that are commented out
 # serve to show the default.
 
-import sys, os, glob
+import sys, os, re, setuptools
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
-_libdir = "../build/lib.%s-%s-%s.%s" % (os.uname()[0].lower(), os.uname()[4],
-                                        sys.version_info[0], sys.version_info[1])
+_build_obj = setuptools.dist.Distribution().get_command_obj('build')
+_build_obj.ensure_finalized()
+
+_libdir = os.path.join('..', _build_obj.build_platlib)
 if os.path.exists(_libdir):
     sys.path.insert(0, os.path.abspath(_libdir))
 
@@ -27,42 +29,47 @@ if os.path.exists(_libdir):
 # coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
 extensions = ['sphinx.ext.autodoc',
               'sphinx.ext.autosummary',
-              'sphinx.ext.todo', 
+              'sphinx.ext.extlinks',
+              'sphinx.ext.todo',
               'sphinx.ext.ifconfig',
               'sphinx.ext.intersphinx',
               'sphinx.ext.napoleon']
 
-intersphinx_mapping = {'python': ('http://docs.python.org/3.5', None)}
+intersphinx_mapping = {'python': ('https://docs.python.org/%d.%d' % sys.version_info[:2], None)}
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
 
 # The suffix of source filenames.
-source_suffix = '.rst'
+source_suffix = {'.rst': 'restructuredtext'}
 
 # The encoding of source files.
-#source_encoding = 'utf-8'
+# source_encoding = 'utf-8'
 
 # The master toctree document.
 master_doc = 'index'
 
 # General information about the project.
-project = u'pysam'
-copyright = u'2009, Andreas Heger, Kevin Jacobs et al.'
+project = 'pysam'
+copyright = '2009–2026 Andreas Heger, John Marshall, Kevin Jacobs, et al'
 
 # Included at the end of each rst file
 rst_epilog = '''
-.. _CGAT Training Programme: http://www.cgat.org
 .. _pysam: https://github.com/pysam-developers/pysam
-.. _samtools: http://samtools.sourceforge.net/
-.. _bcftools: https://samtools.github.io/bcftools/bcftools.html
-.. _htslib: http://www.htslib.org/
-.. _tabix: http://samtools.sourceforge.net/tabix.shtml/
-.. _Galaxy: https://main.g2.bx.psu.edu/
-.. _cython: http://cython.org/
-.. _python: http://python.org/
-.. _pyximport: http://www.prescod.net/pyximport/
-
+.. _samtools: https://www.htslib.org/doc/1.24/samtools.html
+.. _bcftools: https://www.htslib.org/doc/1.24/bcftools.html
+.. _htslib: https://www.htslib.org/
+.. _tabix: https://www.htslib.org/doc/tabix.html
+.. _samtools's global fmt-options: https://www.htslib.org/doc/samtools.html#GLOBAL_COMMAND_OPTIONS
+.. _Galaxy: https://usegalaxy.org/
+.. _cython: https://cython.org/
+.. _python: https://www.python.org/
+.. _PyPI: https://pypi.org/
+.. _pip: https://pip.pypa.io/
+.. _pyximport: https://github.com/cython/cython/tree/master/pyximport
+.. _conda: https://conda.io/docs/
+.. _bioconda: https://bioconda.github.io/
+.. _sphinx: https://www.sphinx-doc.org/en/master/usage/installation.html
 '''
 
 autosummary_generate = True
@@ -112,14 +119,39 @@ exclude_trees = ['_build']
 pygments_style = 'sphinx'
 
 # A list of ignored prefixes for module index sorting.
-#modindex_common_prefix = []
+# modindex_common_prefix = []
+
+# -- Rewrite "PR #NNN" and "#NNN" in NEWS as URL links -------------------------
+
+extlinks = {
+    'issue': ('https://github.com/pysam-developers/pysam/issues/%s', '#%s'),
+    'pull':  ('https://github.com/pysam-developers/pysam/pull/%s', 'PR #%s'),
+    }
+
+
+def expand_github_references(text):
+    text = re.sub(r'PR\s*#(\d+)', r':pull:`\1`', text)
+    text = re.sub(r'#(\d+)', r':issue:`\1`', text)
+    return text
+
+
+def include_read(app, relative_path, parent_docname, source):
+    if relative_path.name == 'NEWS':
+        source[0] = expand_github_references(source[0])
+
+
+def setup(app):
+    try:
+        app.connect('include-read', include_read)
+    except Exception:
+        pass  # Sphinx is too old to link issues/PRs
 
 
 # -- Options for HTML output ---------------------------------------------------
 
 # The theme to use for HTML and HTML Help pages.  Major themes that come with
 # Sphinx are currently 'default' and 'sphinxdoc'.
-html_theme = 'default'
+html_theme = 'sphinx_rtd_theme'
 
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the
@@ -200,8 +232,8 @@ htmlhelp_basename = 'samtoolsdoc'
 # Grouping the document tree into LaTeX files. List of tuples
 # (source start file, target name, title, author, documentclass [howto/manual]).
 latex_documents = [
-    ('index', 'pysam.tex', ur'pysam documentation',
-     ur'Andreas Heger, Kevin Jacobs et al.', 'manual'),
+    ('index', 'pysam.tex', 'pysam documentation',
+     'Andreas Heger, John Marshall, Kevin Jacobs, et al', 'manual'),
 ]
 
 # The name of an image file (relative to this directory) to place at the top of

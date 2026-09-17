@@ -1,6 +1,6 @@
 /*  tsv2vcf.h -- convert from whitespace-separated fields to VCF
 
-    Copyright (C) 2014 Genome Research Ltd.
+    Copyright (C) 2014-2021 Genome Research Ltd.
 
     Author: Petr Danecek <pd3@sanger.ac.uk>
 
@@ -27,6 +27,7 @@
 #define __TSV2VCF_H__
 
 #include <htslib/vcf.h>
+#include "bcftools.h"
 
 typedef struct _tsv_t tsv_t;
 typedef int (*tsv_setter_t)(tsv_t *, bcf1_t *, void *);
@@ -65,12 +66,12 @@ static inline int tsv_next(tsv_t *tsv)
     if ( !*tsv->se ) return -1;
     if ( tsv->ss==tsv->se )
     {
-        while ( *tsv->se && !isspace(*tsv->se) ) tsv->se++;
+        while ( *tsv->se && !isspace_c(*tsv->se) ) tsv->se++;
         return 0;
     }
-    while ( *tsv->se && isspace(*tsv->se) ) tsv->se++;
+    while ( *tsv->se && isspace_c(*tsv->se) ) tsv->se++;
     tsv->ss = tsv->se;
-    while ( *tsv->se && !isspace(*tsv->se) ) tsv->se++;
+    while ( *tsv->se && !isspace_c(*tsv->se) ) tsv->se++;
     return 0;
 }
 
@@ -80,6 +81,7 @@ static inline int tsv_next(tsv_t *tsv)
 int tsv_setter_chrom(tsv_t *tsv, bcf1_t *rec, void *usr);
 int tsv_setter_pos(tsv_t *tsv, bcf1_t *rec, void *usr);
 int tsv_setter_id(tsv_t *tsv, bcf1_t *rec, void *usr);
+int tsv_setter_ref_alt(tsv_t *tsv, bcf1_t *rec, void *usr);     // usr must point to bcf_hdr_t 
 
 #endif
 

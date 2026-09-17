@@ -1,0 +1,30 @@
+[project]
+name = "pysam"
+description = "Package for reading, manipulating, and writing genomic data"
+license = { text = "MIT License" }
+authors = [
+ { name = "Andreas Heger", email = "andreas.heger@gmail.com"}
+]
+requires-python = ">=3.9"
+
+dynamic = [
+    "classifiers",
+    "readme",
+    "version",
+]
+
+[project.urls]
+"Documentation" = "https://pysam.readthedocs.io/"
+"Release notes" = "https://pysam.readthedocs.io/en/stable/release.html"
+
+[build-system]
+requires = ["setuptools>=59.0", "Cython>=3,<4"]
+build-backend = "setuptools.build_meta:__legacy__"
+
+[tool.cibuildwheel]
+before-all = "{project}/devtools/install-prerequisites.sh {project}/devtools/emulate-tools.py /usr/local/bin"
+# Necessary until we build libhts.a out-of-tree from within build_temp
+before-build = "make -C {project}/htslib distclean"
+
+test-requires = ["pytest"]
+test-command = "pytest {project}/tests"

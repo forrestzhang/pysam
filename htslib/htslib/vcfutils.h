@@ -1,6 +1,7 @@
-/*  vcfutils.h -- allele-related utility functions.
-
-    Copyright (C) 2012, 2013, 2015 Genome Research Ltd.
+/// @file htslib/vcfutils.h
+/// Allele-related utility functions.
+/*
+    Copyright (C) 2012, 2013, 2015-2016 Genome Research Ltd.
 
     Author: Petr Danecek <pd3@sanger.ac.uk>
 
@@ -41,7 +42,9 @@ struct kbitset_t;
  *  Returns the number of removed alleles on success or negative
  *  on error:
  *      -1 .. some allele index is out of bounds
+ *      -2 .. could not remove alleles
  */
+HTSLIB_EXPORT
 int bcf_trim_alleles(const bcf_hdr_t *header, bcf1_t *line);
 
 /**
@@ -49,11 +52,13 @@ int bcf_trim_alleles(const bcf_hdr_t *header, bcf1_t *line);
  *  @header:  for access to BCF_DT_ID dictionary
  *  @line:    VCF line obtained from vcf_parse1
  *  @mask:    alleles to remove
- * 
+ *
  *  If you have more than 31 alleles, then the integer bit mask will
  *  overflow, so use bcf_remove_allele_set instead
+ *  Returns 0 on success, <0 on error
  */
-void bcf_remove_alleles(const bcf_hdr_t *header, bcf1_t *line, int mask);
+HTSLIB_EXPORT
+int bcf_remove_alleles(const bcf_hdr_t *header, bcf1_t *line, int mask) HTS_DEPRECATED("Please use bcf_remove_allele_set instead");
 
 /**
  *  bcf_remove_allele_set() - remove ALT alleles according to bitset @rm_set
@@ -61,10 +66,13 @@ void bcf_remove_alleles(const bcf_hdr_t *header, bcf1_t *line, int mask);
  *  @line:    VCF line obtained from vcf_parse1
  *  @rm_set:  pointer to kbitset_t object with bits set for allele
  *            indexes to remove
- *  
+ *
+ *  Returns 0 on success or -1 on failure
+ *
  *  Number=A,R,G INFO and FORMAT fields will be updated accordingly.
  */
-void bcf_remove_allele_set(const bcf_hdr_t *header, bcf1_t *line, const struct kbitset_t *rm_set);
+HTSLIB_EXPORT
+int bcf_remove_allele_set(const bcf_hdr_t *header, bcf1_t *line, const struct kbitset_t *rm_set);
 
 /**
  *  bcf_calc_ac() - calculate the number of REF and ALT alleles
@@ -77,9 +85,9 @@ void bcf_remove_allele_set(const bcf_hdr_t *header, bcf1_t *line, const struct k
  *  be determined.
  *
  *  The value of @which determines if existing INFO/AC,AN can be
- *  used (BCF_UN_INFO) and and if indv fields can be splitted
- *  (BCF_UN_FMT).
+ *  used (BCF_UN_INFO) and and if indv fields can be split (BCF_UN_FMT).
  */
+HTSLIB_EXPORT
 int bcf_calc_ac(const bcf_hdr_t *header, bcf1_t *line, int *ac, int which);
 
 
@@ -105,6 +113,7 @@ int bcf_calc_ac(const bcf_hdr_t *header, bcf1_t *line, int *ac, int which);
 #define GT_HAPL_R 4
 #define GT_HAPL_A 5
 #define GT_UNKN   6
+HTSLIB_EXPORT
 int bcf_gt_type(bcf_fmt_t *fmt_ptr, int isample, int *ial, int *jal);
 
 static inline int bcf_acgt2int(char c)

@@ -1,6 +1,6 @@
 /*  samtools.h -- utility routines.
 
-    Copyright (C) 2013-2015 Genome Research Ltd.
+    Copyright (C) 2013-2015, 2019, 2023 Genome Research Ltd.
 
     Author: Petr Danecek <pd3@sanger.ac.uk>
 
@@ -25,15 +25,32 @@ DEALINGS IN THE SOFTWARE.  */
 #ifndef SAMTOOLS_H
 #define SAMTOOLS_H
 
+#include "htslib/hts_defs.h"
+#include "htslib/sam.h"
+#include "sam_utils.h"
+
 const char *samtools_version(void);
 
-#if defined __GNUC__ && __GNUC__ >= 2
-#define CHECK_PRINTF(fmt,args) __attribute__ ((format (printf, fmt, args)))
-#else
-#define CHECK_PRINTF(fmt,args)
-#endif
+/* BAM sanitizer options */
+#define FIX_POS     2
+#define FIX_MQUAL   4
+#define FIX_UNMAP   8
+#define FIX_CIGAR   16
+#define FIX_AUX     32
+#define FIX_CIGDUP  64
+#define FIX_CIGARX  128
 
-void print_error(const char *subcommand, const char *format, ...) CHECK_PRINTF(2, 3);
-void print_error_errno(const char *subcommand, const char *format, ...) CHECK_PRINTF(2, 3);
+// default for position sorted data
+#define FIX_ON (FIX_MQUAL|FIX_UNMAP|FIX_CIGAR|FIX_AUX|FIX_CIGDUP)
+#define FIX_ALL 127
+
+// Parses a comma-separated list of "pos", "mqual", "unmap", "cigar", "cigdup",
+// "cigarx" and "aux" keywords for the bam sanitizer.
+int bam_sanitize_options(const char *str);
+
+// Sanitize a BAM record, using FIX_* bit flags as defined above.
+// Returns 0 on success,
+//        <0 on failure.
+int bam_sanitize(sam_hdr_t *h, bam1_t *b, int flags);
 
 #endif

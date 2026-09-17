@@ -29,7 +29,7 @@ DEALINGS IN THE SOFTWARE.  */
 #include <assert.h>
 #include "bam_plbuf.h"
 #include "bam_lpileup.h"
-#include <htslib/ksort.h>
+#include "splaysort.h"
 
 #define TV_GAP 2
 
@@ -39,7 +39,7 @@ typedef struct __freenode_t {
 } freenode_t, *freenode_p;
 
 #define freenode_lt(a,b) ((a)->cnt < (b)->cnt || ((a)->cnt == (b)->cnt && (a)->level < (b)->level))
-KSORT_INIT(node, freenode_p, freenode_lt)
+SPLAYSORT_INIT(node, freenode_p, freenode_lt)
 
 /* Memory pool, similar to the one in bam_pileup.c */
 typedef struct {
@@ -100,7 +100,7 @@ void bam_lplbuf_reset(bam_lplbuf_t *buf)
     buf->n_nodes = 0;
 }
 
-static int tview_func(uint32_t tid, uint32_t pos, int n, const bam_pileup1_t *pl, void *data)
+static int tview_func(uint32_t tid, hts_pos_t pos, int n, const bam_pileup1_t *pl, void *data)
 {
     bam_lplbuf_t *tv = (bam_lplbuf_t*)data;
     freenode_t *p;
@@ -163,7 +163,7 @@ static int tview_func(uint32_t tid, uint32_t pos, int n, const bam_pileup1_t *pl
         tv->aux[i] = tv->tail; // add a proper tail for the loop below
         tv->n_nodes = i;
         if (tv->n_nodes) {
-            ks_introsort(node, tv->n_nodes, tv->aux);
+            splaysort(node, tv->n_nodes, tv->aux);
             for (i = 0; i < tv->n_nodes; ++i) tv->aux[i]->next = tv->aux[i+1];
             tv->head = tv->aux[0];
         } else tv->head = tv->tail;

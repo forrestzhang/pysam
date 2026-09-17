@@ -1,8 +1,8 @@
-#include "pysam.h"
+#include "samtools.pysam.h"
 
 /*  bam_index.c -- index and idxstats subcommands.
 
-    Copyright (C) 2008-2011, 2013, 2014 Genome Research Ltd.
+    Copyright (C) 2008-2011, 2013-2016, 2018, 2019, 2023-2025  Genome Research Ltd.
     Portions copyright (C) 2010 Broad Institute.
     Portions copyright (C) 2013 Peter Cock, The James Hutton Institute.
 
@@ -30,96 +30,283 @@ DEALINGS IN THE SOFTWARE.  */
 
 #include <htslib/hts.h>
 #include <htslib/sam.h>
+#include <htslib/hfile.h>
 #include <htslib/khash.h>
 #include <stdlib.h>
 #include <stdio.h>
-#define __STDC_FORMAT_MACROS
 #include <inttypes.h>
 #include <unistd.h>
+#include <getopt.h>
 
 #include "samtools.h"
+#include "sam_opts.h"
 
 #define BAM_LIDX_SHIFT    14
 
 static void index_usage(FILE *fp)
 {
     fprintf(fp,
-"Usage: samtools index [-bc] [-m INT] <in.bam> [out.index]\n"
+"Usage: samtools index -M [-bc] [-m INT] <in1.bam> <in2.bam>...\n"
+"   or: samtools index [-bc] [-m INT] <in.bam> [out.index]\n"
 "Options:\n"
-"  -b       Generate BAI-format index for BAM files [default]\n"
-"  -c       Generate CSI-format index for BAM files\n"
-"  -m INT   Set minimum interval size for CSI indices to 2^INT [%d]\n", BAM_LIDX_SHIFT);
+"  -b, --bai            Generate BAI-format index for BAM files [default]\n"
+"  -c, --csi            Generate CSI-format index for BAM files\n"
+"  -m, --min-shift INT  Set minimum interval size for CSI indices to 2^INT [%d]\n"
+"  -M                   Interpret all filename arguments as files to be indexed\n"
+"  -o, --output FILE    Write index to FILE [alternative to <out.index> in args]\n"
+"  -@, --threads INT    Sets the number of additional threads [0]\n", BAM_LIDX_SHIFT);
+}
+
+// Returns 1 if the file does not exist or can be positively
+// identified as an index file.
+static int nonexistent_or_index(const char *fn)
+{
+    int ret1, ret2;
+    htsFormat fmt;
+    hFILE *fp = hopen(fn, "r");
+    if (fp == NULL) return 1;
+
+    ret1 = hts_detect_format2(fp, fn, &fmt);
+    ret2 = hclose(fp);
+    if (ret1 < 0 || ret2 < 0) return 0;
+
+    return fmt.category == index_file;
 }
 
 int bam_index(int argc, char *argv[])
 {
     int csi = 0;
     int min_shift = BAM_LIDX_SHIFT;
-    int c, ret;
+    int multiple = 0;
+    int n_threads = 0;
+    int n_files, c, i, ret;
+    const char *fn_idx = NULL;
 
-    while ((c = getopt(argc, argv, "bcm:")) >= 0)
+    static const struct option lopts[] = {
+        SAM_OPT_GLOBAL_OPTIONS('-', '-', '-', '-', '-', '@'),
+        {"output",    required_argument, NULL, 'o'},
+        {"bai",       no_argument,       NULL, 'b'},
+        {"csi",       no_argument,       NULL, 'c'},
+        {"min-shift", required_argument, NULL, 'm'},
+        { NULL, 0, NULL, 0 }
+    };
+
+    while ((c = getopt_long(argc, argv, "bcm:Mo:@:", lopts, NULL)) >= 0)
         switch (c) {
         case 'b': csi = 0; break;
         case 'c': csi = 1; break;
-        case 'm': csi = 1; min_shift = atoi(optarg); break;
+        case 'm':
+            csi = 1;
+            if (!parse_int_value(optarg, &min_shift)) {
+                print_error("index", "invalid min_shift");
+                index_usage(samtools_stderr);
+                return 1;
+            }
+            break;
+        case 'M': multiple = 1; break;
+        case 'o': fn_idx = optarg; break;
+        case '@':
+            if (!parse_int_value(optarg, &n_threads)) {
+                print_error("index", "invalid thread count");
+                index_usage(samtools_stderr);
+                return 1;
+            }
+            break;
         default:
-            index_usage(pysam_stderr);
+            index_usage(samtools_stderr);
             return 1;
         }
 
-    if (optind == argc) {
-        index_usage(pysam_stdout);
-        return 1;
+    n_files = argc - optind;
+
+    if (n_files == 0) {
+        index_usage(samtools_stdout);
+        return 0;
     }
 
-    ret = sam_index_build2(argv[optind], argv[optind+1], csi? min_shift : 0);
-    if (ret != 0) {
-        if (ret == -2)
-            print_error_errno("index", "failed to open \"%s\"", argv[optind]);
-        else if (ret == -3)
-            print_error("index", "\"%s\" is in a format that cannot be usefully indexed", argv[optind]);
-        else
-            print_error("index", "\"%s\" is corrupted or unsorted", argv[optind]);
+    // Handle legacy synopsis
+    if (n_files == 2 && !fn_idx && nonexistent_or_index(argv[optind+1])) {
+        n_files = 1;
+        fn_idx = argv[optind+1];
+    }
+
+    if (n_files > 1 && !multiple) {
+        print_error("index", "use -M to enable indexing more than one alignment file");
         return EXIT_FAILURE;
     }
 
-    return 0;
+    if (fn_idx && n_files > 1) {
+        // TODO In future we may allow %* placeholders or similar
+        print_error("index", "can't use -o with multiple input alignment files");
+        return EXIT_FAILURE;
+    }
+
+    for (i = optind; i < optind + n_files; i++) {
+        ret = sam_index_build3(argv[i], fn_idx, csi? min_shift : 0, n_threads);
+        if (ret < 0) {
+            if (ret == -2)
+                print_error_errno("index", "failed to open \"%s\"", argv[i]);
+            else if (ret == -3)
+                print_error("index", "\"%s\" is in a format that cannot be usefully indexed", argv[i]);
+            else if (ret == -4 && fn_idx)
+                print_error("index", "failed to create or write index \"%s\"", fn_idx);
+            else if (ret == -4)
+                print_error("index", "failed to create or write index");
+            else
+                print_error_errno("index", "failed to create index for \"%s\"", argv[i]);
+            return EXIT_FAILURE;
+        }
+    }
+
+    return EXIT_SUCCESS;
+}
+
+/*
+ * Cram indices do not contain mapped/unmapped record counts, so we have to
+ * decode each record and count.  However we can speed this up as much as
+ * possible by using the required fields parameter.
+ *
+ * This prints the stats to samtools_stdout in the same manner than the BAM function
+ * does.
+ *
+ * Returns 0 on success,
+ *        -1 on failure.
+ */
+int slow_idxstats(samFile *fp, sam_hdr_t *header) {
+    int ret, last_tid = -2;
+    bam1_t *b = bam_init1();
+
+    if (hts_set_opt(fp, CRAM_OPT_REQUIRED_FIELDS, SAM_RNAME | SAM_FLAG))
+        return -1;
+
+    uint64_t (*count0)[2] = calloc(sam_hdr_nref(header)+1, sizeof(*count0));
+    uint64_t (*counts)[2] = count0+1;
+    if (!count0)
+        return -1;
+
+    while ((ret = sam_read1(fp, header, b)) >= 0) {
+        if (b->core.tid >= sam_hdr_nref(header) || b->core.tid < -1) {
+            free(count0);
+            return -1;
+        }
+
+        if (b->core.tid != last_tid) {
+            if (last_tid >= -1) {
+                if (counts[b->core.tid][0] + counts[b->core.tid][1]) {
+                    print_error("idxstats", "file is not position sorted");
+                    free(count0);
+                    return -1;
+                }
+            }
+            last_tid = b->core.tid;
+        }
+
+        counts[b->core.tid][(b->core.flag & BAM_FUNMAP) ? 1 : 0]++;
+    }
+
+    if (ret == -1) {
+        int i;
+        for (i = 0; i < sam_hdr_nref(header); i++) {
+            fprintf(samtools_stdout, "%s\t%"PRId64"\t%"PRIu64"\t%"PRIu64"\n",
+                   sam_hdr_tid2name(header, i),
+                   (int64_t) sam_hdr_tid2len(header, i),
+                   counts[i][0], counts[i][1]);
+        }
+        fprintf(samtools_stdout, "*\t0\t%"PRIu64"\t%"PRIu64"\n", counts[-1][0], counts[-1][1]);
+    }
+
+    free(count0);
+
+    bam_destroy1(b);
+
+    return (ret == -1) ? 0 : -1;
+}
+
+static void usage_exit(FILE *fp, int exit_status)
+{
+    fprintf(fp, "Usage: samtools idxstats [options] <in.bam>\n"
+                "  -X           Include customized index file\n");
+    sam_global_opt_help(fp, "-.---@-.");
+    samtools_exit(exit_status);
 }
 
 int bam_idxstats(int argc, char *argv[])
 {
     hts_idx_t* idx;
-    bam_hdr_t* header;
+    sam_hdr_t* header;
     samFile* fp;
+    int c, has_index_file = 0, file_names = 1;
+    char *index_name = NULL;
 
-    if (argc < 2) {
-        fprintf(pysam_stderr, "Usage: samtools idxstats <in.bam>\n");
+    sam_global_args ga = SAM_GLOBAL_ARGS_INIT;
+    static const struct option lopts[] = {
+        SAM_OPT_GLOBAL_OPTIONS('-', 0, '-', '-', '-', '@'),
+        {NULL, 0, NULL, 0}
+    };
+
+    while ((c = getopt_long(argc, argv, "@:X", lopts, NULL)) >= 0) {
+        switch (c) {
+            case 'X': has_index_file=1; break;
+            default:  if (parse_sam_global_opt(c, optarg, lopts, &ga) == 0) break;
+                /* else fall-through */
+            case '?':
+                usage_exit(samtools_stderr, EXIT_FAILURE);
+        }
+    }
+
+    if (has_index_file) {
+        file_names = 2;
+        index_name = argv[optind + 1];
+    }
+
+    if (argc != optind + file_names) {
+        if (argc == optind) usage_exit(samtools_stdout, EXIT_SUCCESS);
+        else usage_exit(samtools_stderr, EXIT_FAILURE);
+    }
+
+    fp = sam_open_format(argv[optind], "r", &ga.in);
+    if (fp == NULL) {
+        print_error_errno("idxstats", "failed to open \"%s\"", argv[optind]);
         return 1;
     }
-    fp = sam_open(argv[1], "r");
-    if (fp == NULL) { fprintf(pysam_stderr, "[%s] fail to open BAM.\n", __func__); return 1; }
     header = sam_hdr_read(fp);
     if (header == NULL) {
-        fprintf(pysam_stderr, "[%s] failed to read header for '%s'.\n",
-                __func__, argv[1]);
+        print_error("idxstats", "failed to read header for \"%s\"", argv[optind]);
         return 1;
     }
-    idx = sam_index_load(fp, argv[1]);
-    if (idx == NULL) { fprintf(pysam_stderr, "[%s] fail to load the index.\n", __func__); return 1; }
 
-    int i;
-    for (i = 0; i < header->n_targets; ++i) {
-        // Print out contig name and length
-        fprintf(pysam_stdout, "%s\t%d", header->target_name[i], header->target_len[i]);
-        // Now fetch info about it from the meta bin
-        uint64_t u, v;
-        hts_idx_get_stat(idx, i, &u, &v);
-        fprintf(pysam_stdout, "\t%" PRIu64 "\t%" PRIu64 "\n", u, v);
+    if (hts_get_format(fp)->format != bam) {
+    slow_method:
+        if (ga.nthreads)
+            hts_set_threads(fp, ga.nthreads);
+
+        if (slow_idxstats(fp, header) < 0) {
+            print_error("idxstats", "failed to process \"%s\"", argv[optind]);
+            return 1;
+        }
+    } else {
+        idx = sam_index_load2(fp, argv[optind], index_name);
+        if (idx == NULL) {
+            print_error("idxstats", "fail to load index for \"%s\", "
+                        "reverting to slow method", argv[optind]);
+            goto slow_method;
+        }
+
+        int i;
+        for (i = 0; i < sam_hdr_nref(header); ++i) {
+            // Print out contig name and length
+            fprintf(samtools_stdout, "%s\t%"PRId64, sam_hdr_tid2name(header, i), (int64_t) sam_hdr_tid2len(header, i));
+            // Now fetch info about it from the meta bin
+            uint64_t u, v;
+            hts_idx_get_stat(idx, i, &u, &v);
+            fprintf(samtools_stdout, "\t%" PRIu64 "\t%" PRIu64 "\n", u, v);
+        }
+        // Dump information about unmapped reads
+        fprintf(samtools_stdout, "*\t0\t0\t%" PRIu64 "\n", hts_idx_get_n_no_coor(idx));
+        hts_idx_destroy(idx);
     }
-    // Dump information about unmapped reads
-    fprintf(pysam_stdout, "*\t0\t0\t%" PRIu64 "\n", hts_idx_get_n_no_coor(idx));
-    bam_hdr_destroy(header);
-    hts_idx_destroy(idx);
+
+    sam_hdr_destroy(header);
     sam_close(fp);
     return 0;
 }

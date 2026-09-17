@@ -1,6 +1,6 @@
 /*  sam_opts.c -- utilities to aid parsing common command line options.
 
-    Copyright (C) 2015 Genome Research Ltd.
+    Copyright (C) 2015, 2019, 2025 Genome Research Ltd.
 
     Author: James Bonfield <jkb@sanger.ac.uk>
 
@@ -27,7 +27,43 @@ DEALINGS IN THE SOFTWARE.  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include <stdbool.h>
 #include "sam_opts.h"
+
+/*
+ * Parse an integer from a value passed on the command-line. Return true on
+ * success, false if the string was not a valid integer.
+*/
+bool parse_int_value(const char *optarg, int *value) {
+    char *endptr;
+    if (!optarg) return false;
+    errno = 0;
+    long result = strtol(optarg, &endptr, 10);
+    if (endptr == optarg) return false; // No integer was parsed
+    if (*endptr != '\0') return false; // Extra characters ("1hello")
+    if (errno) return false; // Out of long range, result not valid
+    if (result < INT_MIN || result > INT_MAX) return false; // result out of int range
+    *value = result;
+    return true;
+}
+
+/*
+ * Parse an long int from a value passed on the command-line. Return true on
+ * success, false if the string was not a valid long int.
+*/
+bool parse_long_value(const char *optarg, long *value, int base) {
+    char *endptr;
+    if (!optarg) return false;
+    errno = 0;
+    // Typically base is 10, or 0 to allow parsing strings like 0xff
+    long result = strtol(optarg, &endptr, base);
+    if (endptr == optarg) return false; // No integer was parsed
+    if (*endptr != '\0') return false; // Extra characters ("1hello")
+    if (errno) return false; // Out of long range, result not valid
+    *value = result;
+    return true;
+}
 
 /*
  * Processes a standard "global" samtools long option.
@@ -66,21 +102,62 @@ int parse_sam_global_opt(int c, const char *optarg, const struct option *lopt,
             break;
         } else if (strcmp(lopt->name, "reference") == 0) {
             char *ref = malloc(10 + strlen(optarg) + 1);
+
+            if (!ref) {
+                fprintf(stderr, "Unable to allocate memory in "
+                                "parse_sam_global_opt.\n");
+
+                return -1;
+            }
+
             sprintf(ref, "reference=%s", optarg);
-            ga->reference = strdup(optarg);
+
+            if (!(ga->reference = strdup(optarg))) {
+                fprintf(stderr, "Unable to allocate memory in "
+                                "parse_sam_global_opt.\n");
+
+                return -1;
+            }
+
             r  = hts_opt_add((hts_opt **)&ga->in.specific, ref);
             r |= hts_opt_add((hts_opt **)&ga->out.specific, ref);
             free(ref);
             break;
-//      } else if (strcmp(lopt->name, "verbose") == 0) {
-//          ga->verbosity++;
-//          break;
+        } else if (strcmp(lopt->name, "threads") == 0) {
+            if (!parse_int_value(optarg, &ga->nthreads))
+            {
+                fprintf(stderr, "Invalid threads value.\n");
+                return -1;
+            }
+            break;
+        } else if (strcmp(lopt->name, "write-index") == 0) {
+            ga->write_index = 1;
+            break;
+        } else if (strcmp(lopt->name, "verbosity") == 0) {
+            if (!parse_int_value(optarg, &hts_verbose))
+            {
+                fprintf(stderr, "Invalid verbosity value.\n");
+                return -1;
+            }
+            break;
         }
     }
 
     if (!lopt->name) {
-        fprintf(stderr, "Unexpected global option: %s\n", lopt->name);
+        fprintf(stderr, "Unexpected global option.\n");
         return -1;
+    }
+
+    /*
+     * SAM format with compression enabled implies SAM.bgzf
+     */
+    if (ga->out.format == sam) {
+        hts_opt *opts = (hts_opt *)ga->out.specific;
+        while (opts) {
+            if (opts->opt == HTS_OPT_COMPRESSION_LEVEL)
+                ga->out.compression = bgzf;
+            opts = opts->next;
+        }
     }
 
     return r;
@@ -100,7 +177,7 @@ void sam_global_opt_help(FILE *fp, const char *shortopts) {
     int i = 0;
 
     static const struct option lopts[] = {
-        SAM_OPT_GLOBAL_OPTIONS(0,0,0,0,0),
+        SAM_OPT_GLOBAL_OPTIONS(0,0,0,0,0,0),
         { NULL, 0, NULL, 0 }
     };
 
@@ -130,10 +207,18 @@ void sam_global_opt_help(FILE *fp, const char *shortopts) {
         else if (strcmp(lopts[i].name, "reference") == 0)
             fprintf(fp,"reference FILE\n"
                     "               Reference sequence FASTA FILE [null]\n");
-//      else if (strcmp(lopts[i].name, "verbose") == 0)
-//          fprintf(fp,"verbose\n"
-//                  "               Increment level of verbosity\n");
+        else if (strcmp(lopts[i].name, "threads") == 0)
+            fprintf(fp,"threads INT\n"
+                    "               Number of additional threads to use [0]\n");
+        else if (strcmp(lopts[i].name, "write-index") == 0)
+            fprintf(fp,"write-index\n"
+                    "               Automatically index the output files [off]\n");
+        else if (strcmp(lopts[i].name, "verbosity") == 0)
+            fprintf(fp,"verbosity INT\n"
+                    "               Set level of verbosity\n");
     }
+
+    fprintf(fp, "\nSee https://www.htslib.org/doc/samtools.html#GLOBAL_COMMAND_OPTIONS\nfor more details.\n");
 }
 
 void sam_global_args_init(sam_global_args *ga) {

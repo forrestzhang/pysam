@@ -1,8 +1,8 @@
-#include "pysam.h"
+#include "bcftools.pysam.h"
 
 /*  vcfsom.c -- SOM (Self-Organizing Map) filtering.
 
-    Copyright (C) 2013-2014 Genome Research Ltd.
+    Copyright (C) 2013-2014, 2020 Genome Research Ltd.
 
     Author: Petr Danecek <pd3@sanger.ac.uk>
 
@@ -27,6 +27,7 @@ THE SOFTWARE.  */
 #include <stdio.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <assert.h>
 #include <ctype.h>
 #include <string.h>
 #include <errno.h>
@@ -37,6 +38,8 @@ THE SOFTWARE.  */
 #include <htslib/vcf.h>
 #include <htslib/synced_bcf_reader.h>
 #include <htslib/vcfutils.h>
+#include <htslib/hts_os.h>
+#include <htslib/hts_defs.h>
 #include <inttypes.h>
 #include "bcftools.h"
 
@@ -83,10 +86,9 @@ typedef struct
 args_t;
 
 static void usage(void);
-FILE *open_file(char **fname, const char *mode, const char *fmt, ...);
-void mkdir_p(const char *fmt, ...);
+FILE *open_file(char **fname, const char *mode, const char *fmt, ...) HTS_FORMAT(HTS_PRINTF_FMT, 3, 4);
 
-char *msprintf(const char *fmt, ...)
+char * HTS_FORMAT(HTS_PRINTF_FMT, 1, 2) msprintf(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
@@ -104,7 +106,7 @@ char *msprintf(const char *fmt, ...)
 /*
  *  char *t, *p = str;
  *  t = column_next(p, '\t');
- *  if ( strlen("<something>")==t-p && !strncmp(p,"<something>",t-p) ) fprintf(pysam_stdout, "found!\n");
+ *  if ( strlen("<something>")==t-p && !strncmp(p,"<something>",t-p) ) fprintf(bcftools_stdout, "found!\n");
  *
  *  char *t;
  *  t = column_next(str, '\t'); if ( !*t ) error("expected field\n", str);
@@ -166,15 +168,16 @@ void annots_reader_close(args_t *args)
 static void som_write_map(char *prefix, som_t **som, int nsom)
 {
     FILE *fp = open_file(NULL,"w","%s.som",prefix);
-    fwrite("SOMv1",5,1,fp);
-    fwrite(&nsom,sizeof(int),1,fp);
+    size_t nw;
+    if ( (nw=fwrite("SOMv1",5,1,fp))!=5 ) error("Failed to write 5 bytes\n");
+    if ( (nw=fwrite(&nsom,sizeof(int),1,fp))!=sizeof(int) ) error("Failed to write %zu bytes\n",sizeof(int));
     int i;
     for (i=0; i<nsom; i++)
     {
-        fwrite(&som[i]->size,sizeof(int),1,fp);
-        fwrite(&som[i]->kdim,sizeof(int),1,fp);
-        fwrite(som[i]->w,sizeof(double),som[i]->size*som[i]->kdim,fp);
-        fwrite(som[i]->c,sizeof(double),som[i]->size,fp);
+        if ( (nw=fwrite(&som[i]->size,sizeof(int),1,fp))!=sizeof(int) ) error("Failed to write %zu bytes\n",sizeof(int));
+        if ( (nw=fwrite(&som[i]->kdim,sizeof(int),1,fp))!=sizeof(int) ) error("Failed to write %zu bytes\n",sizeof(int));
+        if ( (nw=fwrite(som[i]->w,sizeof(double),som[i]->size*som[i]->kdim,fp))!=sizeof(double)*som[i]->size*som[i]->kdim ) error("Failed to write %zu bytes\n",sizeof(double)*som[i]->size*som[i]->kdim);
+        if ( (nw=fwrite(som[i]->c,sizeof(double),som[i]->size,fp))!=sizeof(double)*som[i]->size ) error("Failed to write %zu bytes\n",sizeof(double)*som[i]->size);
     }
     if ( fclose(fp) ) error("%s.som: fclose failed\n",prefix);
 }
@@ -353,12 +356,12 @@ static som_t *som_init(args_t *args)
     som->bmu_th = args->bmu_th;
     som->size   = pow(som->nbin,som->ndim);
     som->w = (double*) malloc(sizeof(double)*som->size*som->kdim);
-    if ( !som->w ) error("Could not alloc %d bytes [nbin=%d ndim=%d kdim=%d]\n", sizeof(double)*som->size*som->kdim,som->nbin,som->ndim,som->kdim);
+    if ( !som->w ) error("Could not alloc %"PRIu64" bytes [nbin=%d ndim=%d kdim=%d]\n", (uint64_t)(sizeof(double)*som->size*som->kdim),som->nbin,som->ndim,som->kdim);
     som->c = (double*) calloc(som->size,sizeof(double));
-    if ( !som->w ) error("Could not alloc %d bytes [nbin=%d ndim=%d]\n", sizeof(double)*som->size,som->nbin,som->ndim);
+    if ( !som->w ) error("Could not alloc %"PRIu64" bytes [nbin=%d ndim=%d]\n", (uint64_t)(sizeof(double)*som->size),som->nbin,som->ndim);
     int i;
     for (i=0; i<som->size*som->kdim; i++)
-        som->w[i] = (double)random()/RAND_MAX;
+        som->w[i] = random();
     som->a_idx = (int*) malloc(sizeof(int)*som->ndim);
     som->b_idx = (int*) malloc(sizeof(int)*som->ndim);
     som->div   = (double*) malloc(sizeof(double)*som->ndim);
@@ -455,7 +458,7 @@ static void create_eval_plot(args_t *args)
             "import csv\n"
             "csv.register_dialect('tab', delimiter='\\t', quoting=csv.QUOTE_NONE)\n"
             "dat = []\n"
-            "with open('%s.eval', 'rb') as f:\n"
+            "with open('%s.eval', 'r') as f:\n"
             "\treader = csv.reader(f, 'tab')\n"
             "\tfor row in reader:\n"
             "\t\tif row[0][0]!='#': dat.append(row)\n"
@@ -574,7 +577,7 @@ static void do_train(args_t *args)
             fprintf(fp,"%e\t%f\t%f\n", prev_score, (float)igood/ngood, (float)ibad/nbad);
         if ( !printed && (float)igood/ngood > 0.9 )
         {
-            fprintf(pysam_stdout, "%.2f\t%.2f\t%e\t# %% of bad [1] and good [2] sites at a cutoff [3]\n", 100.*ibad/nbad,100.*igood/ngood,prev_score);
+            fprintf(bcftools_stdout, "%.2f\t%.2f\t%e\t# %% of bad [1] and good [2] sites at a cutoff [3]\n", 100.*ibad/nbad,100.*igood/ngood,prev_score);
             printed = 1;
         }
 
@@ -582,7 +585,7 @@ static void do_train(args_t *args)
         else if ( igood<ngood ) prev_score = good[igood];
         else prev_score = bad[ibad];
     }
-    if ( !printed ) fprintf(pysam_stdout, "%.2f\t%.2f\t%e\t# %% of bad [1] and good [2] sites at a cutoff [3]\n", 100.*ibad/nbad,100.*igood/ngood,prev_score);
+    if ( !printed ) fprintf(bcftools_stdout, "%.2f\t%.2f\t%e\t# %% of bad [1] and good [2] sites at a cutoff [3]\n", 100.*ibad/nbad,100.*igood/ngood,prev_score);
     if ( fp )
     {
         if ( fclose(fp) ) error("%s.eval: fclose failed: %s\n",args->prefix,strerror(errno));
@@ -607,37 +610,37 @@ static void do_classify(args_t *args)
             case MERGE_MAX: score = get_max_score(args, -1); break;
             case MERGE_AVG: score = get_avg_score(args, -1); break;
         }
-        fprintf(pysam_stdout, "%e\n", 1.0 - score/max_score);
+        fprintf(bcftools_stdout, "%e\n", 1.0 - score/max_score);
     }
     annots_reader_close(args);
 }
 
 static void usage(void)
 {
-    fprintf(pysam_stderr, "\n");
-    fprintf(pysam_stderr, "About:   SOM (Self-Organizing Map) filtering.\n");
-    fprintf(pysam_stderr, "Usage:   bcftools som --train    [options] <annots.tab.gz>\n");
-    fprintf(pysam_stderr, "         bcftools som --classify [options]\n");
-    fprintf(pysam_stderr, "\n");
-    fprintf(pysam_stderr, "Model training options:\n");
-    fprintf(pysam_stderr, "    -f, --nfold <int>                  n-fold cross-validation (number of maps) [5]\n");
-    fprintf(pysam_stderr, "    -p, --prefix <string>              prefix of output files\n");
-    fprintf(pysam_stderr, "    -s, --size <int>                   map size [20]\n");
-    fprintf(pysam_stderr, "    -t, --train                        \n");
-    fprintf(pysam_stderr, "\n");
-    fprintf(pysam_stderr, "Classifying options:\n");
-    fprintf(pysam_stderr, "    -c, --classify                     \n");
-    fprintf(pysam_stderr, "\n");
-    fprintf(pysam_stderr, "Experimental training options (no reason to change):\n");
-    fprintf(pysam_stderr, "    -b, --bmu-threshold <float>        threshold for selection of best-matching unit [0.9]\n");
-    fprintf(pysam_stderr, "    -d, --som-dimension <int>          SOM dimension [2]\n");
-    fprintf(pysam_stderr, "    -e, --exclude-bad                  exclude bad sites from training, use for evaluation only\n");
-    fprintf(pysam_stderr, "    -l, --learning-rate <float>        learning rate [1.0]\n");
-    fprintf(pysam_stderr, "    -m, --merge <min|max|avg>          -f merge algorithm [avg]\n");
-    fprintf(pysam_stderr, "    -n, --ntrain-sites <int>           effective number of training sites [number of good sites]\n");
-    fprintf(pysam_stderr, "    -r, --random-seed <int>            random seed, 0 for time() [1]\n");
-    fprintf(pysam_stderr, "\n");
-    exit(1);
+    fprintf(bcftools_stderr, "\n");
+    fprintf(bcftools_stderr, "About:   SOM (Self-Organizing Map) filtering.\n");
+    fprintf(bcftools_stderr, "Usage:   bcftools som --train    [options] <annots.tab.gz>\n");
+    fprintf(bcftools_stderr, "         bcftools som --classify [options]\n");
+    fprintf(bcftools_stderr, "\n");
+    fprintf(bcftools_stderr, "Model training options:\n");
+    fprintf(bcftools_stderr, "    -f, --nfold <int>                  n-fold cross-validation (number of maps) [5]\n");
+    fprintf(bcftools_stderr, "    -p, --prefix <string>              prefix of output files\n");
+    fprintf(bcftools_stderr, "    -s, --size <int>                   map size [20]\n");
+    fprintf(bcftools_stderr, "    -t, --train                        \n");
+    fprintf(bcftools_stderr, "\n");
+    fprintf(bcftools_stderr, "Classifying options:\n");
+    fprintf(bcftools_stderr, "    -c, --classify                     \n");
+    fprintf(bcftools_stderr, "\n");
+    fprintf(bcftools_stderr, "Experimental training options (no reason to change):\n");
+    fprintf(bcftools_stderr, "    -b, --bmu-threshold <float>        threshold for selection of best-matching unit [0.9]\n");
+    fprintf(bcftools_stderr, "    -d, --som-dimension <int>          SOM dimension [2]\n");
+    fprintf(bcftools_stderr, "    -e, --exclude-bad                  exclude bad sites from training, use for evaluation only\n");
+    fprintf(bcftools_stderr, "    -l, --learning-rate <float>        learning rate [1.0]\n");
+    fprintf(bcftools_stderr, "    -m, --merge <min|max|avg>          -f merge algorithm [avg]\n");
+    fprintf(bcftools_stderr, "    -n, --ntrain-sites <int>           effective number of training sites [number of good sites]\n");
+    fprintf(bcftools_stderr, "    -r, --random-seed <int>            random seed, 0 for time() [1]\n");
+    fprintf(bcftools_stderr, "\n");
+    bcftools_exit(1);
 }
 
 int main_vcfsom(int argc, char *argv[])
@@ -692,12 +695,12 @@ int main_vcfsom(int argc, char *argv[])
             case 'd':
                 args->ndim = atoi(optarg);
                 if ( args->ndim<2 ) error("Expected -d >=2, got %d\n", args->ndim);
-                if ( args->ndim>3 ) fprintf(pysam_stderr,"Warning: This will take a long time and is not going to make the results better: -d %d\n", args->ndim);
+                if ( args->ndim>3 ) fprintf(bcftools_stderr,"Warning: This will take a long time and is not going to make the results better: -d %d\n", args->ndim);
                 break;
             case 't': args->action = SOM_TRAIN; break;
             case 'c': args->action = SOM_CLASSIFY; break;
             case 'h':
-            case '?': usage();
+            case '?': usage(); break;
             default: error("Unknown argument: %s\n", optarg);
         }
     }

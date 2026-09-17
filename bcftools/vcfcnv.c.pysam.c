@@ -1,21 +1,21 @@
-#include "pysam.h"
+#include "bcftools.pysam.h"
 
 /* The MIT License
 
-   Copyright (c) 2014-2015 Genome Research Ltd.
+   Copyright (c) 2014-2026 Genome Research Ltd.
 
    Author: Petr Danecek <pd3@sanger.ac.uk>
-   
+
    Permission is hereby granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"), to deal
    in the Software without restriction, including without limitation the rights
    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
    copies of the Software, and to permit persons to whom the Software is
    furnished to do so, subject to the following conditions:
-   
+
    The above copyright notice and this permission notice shall be included in
    all copies or substantial portions of the Software.
-   
+
    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -34,13 +34,16 @@
 
 #include <stdio.h>
 #include <unistd.h>
+#include <assert.h>
 #include <getopt.h>
 #include <math.h>
+#include <inttypes.h>
 #include <htslib/vcf.h>
 #include <htslib/synced_bcf_reader.h>
 #include <htslib/kstring.h>
 #include <htslib/kfunc.h>
 #include <htslib/khash_str2int.h>
+#include <htslib/hts_defs.h>
 #include "bcftools.h"
 #include "HMM.h"
 #include "rbuf.h"
@@ -96,7 +99,7 @@ typedef struct _args_t
     uint32_t *sites;        // positions [nsites,msites]
     int nsites, msites;
 
-    double baum_welch_th, optimize_frac; 
+    double baum_welch_th, optimize_frac;
     float plot_th;
     FILE *summary_fh;
     char **argv, *regions_list, *summary_fname, *output_dir;
@@ -105,7 +108,7 @@ typedef struct _args_t
 }
 args_t;
 
-FILE *open_file(char **fname, const char *mode, const char *fmt, ...);
+FILE *open_file(char **fname, const char *mode, const char *fmt, ...) HTS_FORMAT(HTS_PRINTF_FMT, 3, 4);
 
 static inline void hmm2cn_state(int nstates, int i, int *a, int *b)
 {
@@ -143,7 +146,7 @@ static double *init_tprob_matrix(int ndim, double ij_prob, double same_prob)
     {
         // interpret ij_prob differently, as ii_prob in fact, so that for two
         // samples the behaviour is somewhat closer to single sample calling
-        // with s=0. 
+        // with s=0.
         double pii = 1 - ij_prob*(N_STATES-1);
         ij_prob = (1 - pii) / (ndim - 1);
         for (j=0; j<ndim; j++)
@@ -183,17 +186,17 @@ static double *init_iprobs(int ndim, double same_prob)
 
     assert( ndim==N_STATES || ndim==N_STATES*N_STATES);
 
-    if ( ndim==N_STATES )   
+    if ( ndim==N_STATES )
     {
         // one sample: prior on CN2
-        for (i=0; i<ndim; i++) 
+        for (i=0; i<ndim; i++)
             probs[i] = i==CN2 ? 0.5 : 0.5/3;
     }
     else
     {
         // two samples
         double norm = 0;
-        for (i=0; i<ndim; i++) 
+        for (i=0; i<ndim; i++)
         {
             int ia,ib;
             hmm2cn_state(ndim, i, &ia, &ib);
@@ -214,17 +217,23 @@ static double *init_iprobs(int ndim, double same_prob)
 static void init_sample_files(sample_t *smpl, char *dir)
 {
     smpl->dat_fh = open_file(&smpl->dat_fname,"w","%s/dat.%s.tab",dir,smpl->name);
+    if ( !smpl->dat_fh ) error("Error opening file: %s/dat.%s.tab\n",dir,smpl->name);
+
     smpl->cn_fh  = open_file(&smpl->cn_fname,"w","%s/cn.%s.tab",dir,smpl->name);
+    if ( !smpl->cn_fh ) error("Error opening file: %s/cn.%s.tab\n",dir,smpl->name);
+
     smpl->summary_fh = open_file(&smpl->summary_fname,"w","%s/summary.%s.tab",dir,smpl->name);
+    if ( !smpl->summary_fh ) error("Error opening file: %s/summary.%s.tab\n",dir,smpl->name);
+
     fprintf(smpl->dat_fh,"# [1]Chromosome\t[2]Position\t[3]BAF\t[4]LRR\n");
     fprintf(smpl->cn_fh,"# [1]Chromosome\t[2]Position\t[3]CN\t[4]P(CN0)\t[5]P(CN1)\t[6]P(CN2)\t[7]P(CN3)\n");
     fprintf(smpl->summary_fh,"# RG, Regions [2]Chromosome\t[3]Start\t[4]End\t[5]Copy Number state\t[6]Quality\t[7]nSites\t[8]nHETs\n");
 }
 static void close_sample_files(sample_t *smpl)
 {
-    fclose(smpl->dat_fh);
-    fclose(smpl->cn_fh);
-    fclose(smpl->summary_fh);
+    if ( fclose(smpl->dat_fh)!=0 ) error("[%s] Error: close failed .. %s\n", __func__,smpl->dat_fname);
+    if ( fclose(smpl->cn_fh)!=0 ) error("[%s] Error: close failed .. %s\n", __func__,smpl->cn_fname);
+    if ( fclose(smpl->summary_fh)!=0 ) error("[%s] Error: close failed .. %s\n", __func__,smpl->summary_fname);
 }
 
 static double norm_cdf(double mean, double dev);
@@ -238,7 +247,7 @@ static void init_data(args_t *args)
         if ( bcf_hdr_nsamples(args->hdr)>1 ) error("Multi-sample VCF, missing the -s option\n");
         args->query_sample.name = strdup(args->hdr->samples[0]);
     }
-    else 
+    else
         if ( bcf_hdr_id2int(args->hdr,BCF_DT_SAMPLE,args->query_sample.name)<0 ) error("The sample \"%s\" not found\n", args->query_sample.name);
     if ( !args->files->readers[0].file->is_bin )
     {
@@ -267,18 +276,16 @@ static void init_data(args_t *args)
     args->hmm = hmm_init(args->nstates, args->tprob, 10000);
     hmm_init_states(args->hmm, args->iprobs);
 
-    args->summary_fh = pysam_stdout;
-    if ( args->output_dir )
+    args->summary_fh = bcftools_stdout;
+    init_sample_files(&args->query_sample, args->output_dir);
+    if ( args->control_sample.name )
     {
-        init_sample_files(&args->query_sample, args->output_dir);
-        if ( args->control_sample.name )
-        {
-            init_sample_files(&args->control_sample, args->output_dir);
-            args->summary_fh = open_file(&args->summary_fname,"w","%s/summary.tab",args->output_dir);
-        }
-        else
-            args->summary_fh = NULL;    // one sample only, no two-file summary
+        init_sample_files(&args->control_sample, args->output_dir);
+        args->summary_fh = open_file(&args->summary_fname,"w","%s/summary.tab",args->output_dir);
     }
+    else
+        args->summary_fh = NULL;    // one sample only, no two-file summary
+
 
     int i;
     FILE *fh = args->summary_fh ? args->summary_fh : args->query_sample.summary_fh;
@@ -297,6 +304,19 @@ static void init_data(args_t *args)
                 "# RG, Regions\t[2]Chromosome\t[3]Start\t[4]End\t[5]Copy number:%s\t[6]Quality\t[7]nSites\t[8]nHETs\n",
                 args->query_sample.name
                );
+    if ( args->optimize_frac )
+    {
+        fprintf(args->query_sample.summary_fh, "# CF, cell fraction estimate\t[2]Chromosome\t[3]Start\t[4]End\t[5]Cell fraction\t[6]BAF deviation\n");
+        if ( args->control_sample.name )
+        {
+            fprintf(args->control_sample.summary_fh, "# CF, cell fraction estimate\t[2]Chromosome\t[3]Start\t[4]End\t[5]Cell fraction\t[6]BAF deviation\n");
+            fprintf(args->summary_fh, "# CF, cell fraction estimate\t[2]Chromosome\t[3]Start\t[4]End\t"
+                "[5]Cell fraction:%s\t[6]Cell fraction:%s\t[7]BAF deviation:%s\t[8]BAF deviation:%s\n",
+                args->query_sample.name,args->control_sample.name,
+                args->query_sample.name,args->control_sample.name
+                );
+        }
+    }
 }
 
 char *msprintf(const char *fmt, ...);
@@ -306,7 +326,7 @@ static void py_plot_cnv(char *script, float th)
 
     char *cmd = msprintf("python %s -p %f", script, th);
     int ret = system(cmd);
-    if ( ret) fprintf(pysam_stderr, "The command returned non-zero status %d: %s\n", ret, cmd);
+    if ( ret) fprintf(bcftools_stderr, "The command returned non-zero status %d: %s\n", ret, cmd);
     free(cmd);
 }
 
@@ -323,22 +343,23 @@ static void plot_sample(args_t *args, sample_t *smpl)
             "csv.register_dialect('tab', delimiter='\\t', quoting=csv.QUOTE_NONE)\n"
             "\n"
             "dat = {}\n"
-            "with open('%s', 'rb') as f:\n"
+            "with open('%s', 'r') as f:\n"
             "    reader = csv.reader(f, 'tab')\n"
             "    for row in reader:\n"
             "        chr = row[0]\n"
             "        if chr[0]=='#': continue\n"
             "        if chr not in dat: dat[chr] = []\n"
-            "        dat[chr].append([row[1], float(row[2]), float(row[3])])\n"
+            "        dat[chr].append([int(row[1]), float(row[2]), float(row[3])])\n"
             "\n"
             "cnv = {}\n"
-            "with open('%s', 'rb') as f:\n"
+            "with open('%s', 'r') as f:\n"
             "    reader = csv.reader(f, 'tab')\n"
             "    for row in reader:\n"
             "        chr = row[0]\n"
             "        if chr[0]=='#': continue\n"
             "        if chr not in cnv: cnv[chr] = []\n"
             "        row[2] = int(row[2]) + 0.5\n"
+            "        row[1] = int(row[1])\n"
             "        cnv[chr].append(row[1:])\n"
             "\n"
             "for chr in dat:\n"
@@ -355,7 +376,7 @@ static void plot_sample(args_t *args, sample_t *smpl)
             "       heat[1][x] = cn_dat[x][3]\n"
             "       heat[2][x] = cn_dat[x][4]\n"
             "       heat[3][x] = cn_dat[x][5]\n"
-            "    mesh = ax3.pcolormesh(xgrid, ygrid, heat, cmap='bwr_r')\n"
+            "    mesh = ax3.pcolormesh(xgrid, ygrid, heat, cmap='bwr_r', shading='auto', alpha=0)\n"
             "    mesh.set_clim(vmin=-1,vmax=1)\n"
             "    ax3.plot([x[0] for x in cn_dat],[x[1] for x in cn_dat],'.-',ms=3,color='black')\n"
             "    fig.suptitle('%s (chr '+chr+')')\n"
@@ -372,7 +393,7 @@ static void plot_sample(args_t *args, sample_t *smpl)
             "    plt.subplots_adjust(left=0.08,right=0.95,bottom=0.08,top=0.92)\n"
             "    plt.savefig('%s/plot.%s.chr'+chr+'.png')\n"
             "    plt.close()\n"
-            "\n", 
+            "\n",
             smpl->dat_fname,smpl->cn_fname,smpl->name,args->output_dir,smpl->name
     );
     fclose(fp);
@@ -414,7 +435,7 @@ static void create_plots(args_t *args)
             "\n"
             "def chroms_to_plot(th):\n"
             "   dat = {}\n"
-            "   with open('%s/summary.tab', 'rb') as f:\n"
+            "   with open('%s/summary.tab', 'r') as f:\n"
             "       reader = csv.reader(f, 'tab')\n"
             "       for row in reader:\n"
             "           if row[0]!='RG': continue\n"
@@ -436,19 +457,20 @@ static void create_plots(args_t *args)
             "   plot_chroms = chroms_to_plot(args.plot_threshold)\n"
             "\n"
             "def read_dat(file,dat,plot_chr):\n"
-            "   with open(file, 'rb') as f:\n"
+            "   with open(file, 'r') as f:\n"
             "       reader = csv.reader(f, 'tab')\n"
             "       for row in reader:\n"
             "           chr = row[0]\n"
             "           if chr != plot_chr: continue\n"
-            "           dat.append([row[1], float(row[2]), float(row[3])])\n"
+            "           dat.append([int(row[1]), float(row[2]), float(row[3])])\n"
             "def read_cnv(file,cnv,plot_chr):\n"
-            "   with open(file, 'rb') as f:\n"
+            "   with open(file, 'r') as f:\n"
             "       reader = csv.reader(f, 'tab')\n"
             "       for row in reader:\n"
             "           chr = row[0]\n"
             "           if chr != plot_chr: continue\n"
             "           row[2] = int(row[2]) + 0.5\n"
+            "           row[1] = int(row[1])\n"
             "           cnv.append(row[1:])\n"
             "def find_diffs(a,b):\n"
             "    out = []\n"
@@ -487,7 +509,7 @@ static void create_plots(args_t *args)
             "       heat[1][x] = cn_dat[x][3]\n"
             "       heat[2][x] = cn_dat[x][4]\n"
             "       heat[3][x] = cn_dat[x][5]\n"
-            "    mesh = ax3.pcolormesh(xgrid, ygrid, heat, cmap='bwr')\n"
+            "    mesh = ax3.pcolormesh(xgrid, ygrid, heat, cmap='bwr', shading='auto', alpha=0)\n"
             "    mesh.set_clim(vmin=-1,vmax=1)\n"
             "    ax3.plot([x[0] for x in cn_dat],[x[1] for x in cn_dat],'-',ms=3,color='black',lw=1.7)\n"
             "\n"
@@ -537,7 +559,7 @@ static void create_plots(args_t *args)
             "    plt.subplots_adjust(left=0.08,right=0.95,bottom=0.08,top=0.92,hspace=0)\n"
             "    plt.savefig('%s/plot.%s.%s.chr'+chr+'.png')\n"
             "    plt.close()\n"
-            "\n", 
+            "\n",
             args->control_sample.name,args->query_sample.name,
             args->output_dir,
             args->control_sample.dat_fname,args->query_sample.dat_fname,
@@ -558,6 +580,7 @@ static void destroy_data(args_t *args)
     free(args->sites);
     free(args->eprob);
     free(args->tprob);
+    free(args->iprobs);
     free(args->summary_fname);
     free(args->nonref_afs);
     free(args->query_sample.baf);
@@ -622,17 +645,17 @@ static int set_observed_prob(args_t *args, sample_t *smpl, int isite)
         return 0;
     }
 
-    double cn1_baf = 
+    double cn1_baf =
         norm_prob(baf,GAUSS_CN1_PK_R(smpl)) * (fRR + fRA*0.5) +
         norm_prob(baf,GAUSS_CN1_PK_A(smpl)) * (fAA + fRA*0.5) ;
-    double cn2_baf = 
-        norm_prob(baf,GAUSS_CN2_PK_RR(smpl)) * fRR + 
-        norm_prob(baf,GAUSS_CN2_PK_RA(smpl)) * fRA + 
+    double cn2_baf =
+        norm_prob(baf,GAUSS_CN2_PK_RR(smpl)) * fRR +
+        norm_prob(baf,GAUSS_CN2_PK_RA(smpl)) * fRA +
         norm_prob(baf,GAUSS_CN2_PK_AA(smpl)) * fAA;
-    double cn3_baf = 
-        norm_prob(baf,GAUSS_CN3_PK_RRR(smpl)) * fRR + 
-        norm_prob(baf,GAUSS_CN3_PK_RRA(smpl)) * fRA*0.5 + 
-        norm_prob(baf,GAUSS_CN3_PK_RAA(smpl)) * fRA*0.5 + 
+    double cn3_baf =
+        norm_prob(baf,GAUSS_CN3_PK_RRR(smpl)) * fRR +
+        norm_prob(baf,GAUSS_CN3_PK_RRA(smpl)) * fRA*0.5 +
+        norm_prob(baf,GAUSS_CN3_PK_RAA(smpl)) * fRA*0.5 +
         norm_prob(baf,GAUSS_CN3_PK_AAA(smpl)) * fAA;
 
     double norm = cn1_baf + cn2_baf + cn3_baf;
@@ -641,7 +664,7 @@ static int set_observed_prob(args_t *args, sample_t *smpl, int isite)
     cn3_baf /= norm;
 
     #if DBG0
-    if ( args->verbose ) fprintf(pysam_stderr,"%f\t%f %f %f\n", baf,cn1_baf,cn2_baf,cn3_baf);
+    if ( args->verbose ) fprintf(bcftools_stderr,"%f\t%f %f %f\n", baf,cn1_baf,cn2_baf,cn3_baf);
     #endif
 
     double cn1_lrr = exp(-(lrr + 0.45)*(lrr + 0.45)/smpl->lrr_dev2);
@@ -810,7 +833,7 @@ static int update_sample_args(args_t *args, sample_t *smpl, int ismpl)
         if ( baf>0.5 ) baf = 1 - baf;   // the bands should be symmetric
         if ( baf<1/5.) continue;        // skip RR genotypes
 
-        double prob_cn3 = 0, *probs = fwd + i*nstates;
+        double prob_cn3 = 0, *probs = &HMM_PPROB(fwd,nstates,i,0);
         if ( !args->control_sample.name )
         {
             prob_cn3 = probs[CN3];
@@ -850,6 +873,7 @@ static int update_sample_args(args_t *args, sample_t *smpl, int ismpl)
     for (i=0; i<args->nsites; i++)
     {
         float baf = smpl->baf[i];
+        if ( baf>4/5.) continue;        // skip AA genotypes
         if ( baf>0.5 ) baf = 1 - baf;   // the bands should be symmetric
         if ( baf<1/5.) continue;        // skip RR,AA genotypes
 
@@ -859,14 +883,14 @@ static int update_sample_args(args_t *args, sample_t *smpl, int ismpl)
 
     /*
         A noisy CN2 band is hard to distinguish from two CN3 bands which are
-        close to each other. Set a treshold on the minimum separation based
+        close to each other. Set a threshold on the minimum separation based
         on the BAF deviation at p=0.95
     */
     baf_dev2 /= norm_cn3;
     baf_AA_dev2 /= norm_baf_AA_dev2;
     if ( baf_dev2 < baf_AA_dev2 )  baf_dev2 = baf_AA_dev2;
     double max_mean_cn3 = 0.5 - sqrt(baf_dev2)*1.644854;    // R: qnorm(0.95)=1.644854
-    //fprintf(pysam_stderr,"dev=%f  AA_dev=%f  max_mean_cn3=%f  mean_cn3=%f\n", baf_dev2,baf_AA_dev2,max_mean_cn3,mean_cn3);
+    //fprintf(bcftools_stderr,"dev=%f  AA_dev=%f  max_mean_cn3=%f  mean_cn3=%f\n", baf_dev2,baf_AA_dev2,max_mean_cn3,mean_cn3);
     assert( max_mean_cn3>0 );
 
     double new_frac = 1./mean_cn3 - 2;
@@ -936,13 +960,13 @@ static void cnv_flush_viterbi(args_t *args)
     if ( args->optimize_frac )
     {
         int niter = 0;
-        fprintf(pysam_stderr,"Attempting to estimate the fraction of aberrant cells (chr %s):\n", bcf_hdr_id2name(args->hdr,args->prev_rid));
+        fprintf(bcftools_stderr,"Attempting to estimate the fraction of aberrant cells (chr %s):\n", bcf_hdr_id2name(args->hdr,args->prev_rid));
         do
         {
-            fprintf(pysam_stderr,"\t.. %f %f", args->query_sample.cell_frac,args->query_sample.baf_dev2);
+            fprintf(bcftools_stderr,"\t.. %f %f", args->query_sample.cell_frac,args->query_sample.baf_dev2);
             if ( args->control_sample.name )
-                fprintf(pysam_stderr,"\t.. %f %f", args->control_sample.cell_frac,args->control_sample.baf_dev2);
-            fprintf(pysam_stderr,"\n");
+                fprintf(bcftools_stderr,"\t.. %f %f", args->control_sample.cell_frac,args->control_sample.baf_dev2);
+            fprintf(bcftools_stderr,"\n");
             set_emission_probs(args);
             hmm_run_fwd_bwd(hmm, args->nsites, args->eprob, args->sites);
         }
@@ -958,10 +982,24 @@ static void cnv_flush_viterbi(args_t *args)
             if ( args->control_sample.name ) set_gauss_params(args, &args->control_sample);
         }
 
-        fprintf(pysam_stderr,"\t.. %f %f", args->query_sample.cell_frac,args->query_sample.baf_dev2);
+        fprintf(bcftools_stderr,"\t.. %f %f", args->query_sample.cell_frac,args->query_sample.baf_dev2);
         if ( args->control_sample.name )
-            fprintf(pysam_stderr,"\t.. %f %f", args->control_sample.cell_frac,args->control_sample.baf_dev2);
-        fprintf(pysam_stderr,"\n");
+            fprintf(bcftools_stderr,"\t.. %f %f", args->control_sample.cell_frac,args->control_sample.baf_dev2);
+        fprintf(bcftools_stderr,"\n");
+
+        fprintf(args->query_sample.summary_fh,"CF\t%s\t%d\t%d\t%.2f\t%f\n",
+            bcf_hdr_id2name(args->hdr,args->prev_rid),args->sites[0]+1,args->sites[args->nsites-1]+1,
+            args->query_sample.cell_frac,sqrt(args->query_sample.baf_dev2));
+        if ( args->control_sample.name )
+        {
+            fprintf(args->control_sample.summary_fh,"CF\t%s\t%d\t%d\t%.2f\t%f\n",
+                    bcf_hdr_id2name(args->hdr,args->prev_rid),args->sites[0]+1,args->sites[args->nsites-1]+1,
+                    args->control_sample.cell_frac,sqrt(args->control_sample.baf_dev2));
+            fprintf(args->summary_fh,"CF\t%s\t%d\t%d\t%.2f\t%.2f\t%f\t%f\n",
+                    bcf_hdr_id2name(args->hdr,args->prev_rid),args->sites[0]+1,args->sites[args->nsites-1]+1,
+                    args->query_sample.cell_frac, args->control_sample.cell_frac,
+                    sqrt(args->query_sample.baf_dev2), sqrt(args->control_sample.baf_dev2));
+        }
     }
     set_emission_probs(args);
 
@@ -971,7 +1009,7 @@ static void cnv_flush_viterbi(args_t *args)
         double ori_ii = avg_ii_prob(nstates,hmm_get_tprob(hmm));
         hmm_run_baum_welch(hmm, args->nsites, args->eprob, args->sites);
         double new_ii = avg_ii_prob(nstates,hmm_get_tprob(hmm));
-        fprintf(pysam_stderr,"%e\t%e\t%e\n", ori_ii,new_ii,new_ii-ori_ii);
+        fprintf(bcftools_stderr,"%e\t%e\t%e\n", ori_ii,new_ii,new_ii-ori_ii);
         double *tprob = init_tprob_matrix(nstates, 1-new_ii, args->same_prob);
         hmm_set_tprob(args->hmm, tprob, 10000);
         double *tprob_arr = hmm_get_tprob(hmm);
@@ -983,9 +1021,9 @@ static void cnv_flush_viterbi(args_t *args)
             {
                 for (j=0; j<nstates; j++)
                 {
-                    fprintf(pysam_stdout, " %.15f", MAT(tprob_arr,nstates,j,i));
+                    fprintf(bcftools_stdout, " %.15f", MAT(tprob_arr,nstates,j,i));
                 }
-                fprintf(pysam_stdout, "\n");
+                fprintf(bcftools_stdout, "\n");
             }
             break;
         }
@@ -997,12 +1035,12 @@ static void cnv_flush_viterbi(args_t *args)
     // Output the results
     uint8_t *vpath = hmm_get_viterbi_path(hmm);
     double qual = 0, *fwd = hmm_get_fwd_bwd_prob(hmm);
-    int i,j, isite, start_cn = vpath[0], start_pos = args->sites[0], istart_pos = 0;
+    int i,j, isite, start_cn = HMM_VPATH(vpath,args->nstates,0), start_pos = args->sites[0], istart_pos = 0;
     int ctrl_ntot = 0, smpl_ntot = 0, ctrl_nhet = 0, smpl_nhet = 0;
     for (isite=0; isite<args->nsites; isite++)
     {
-        int state = vpath[args->nstates*isite];
-        double *pval = fwd + isite*args->nstates;
+        int state = HMM_VPATH(vpath,args->nstates,isite);
+        double *pval = &HMM_PPROB(fwd, args->nstates, isite, 0);
 
         qual += pval[start_cn];
 
@@ -1083,6 +1121,10 @@ static void cnv_flush_viterbi(args_t *args)
 
 static int parse_lrr_baf(sample_t *smpl, bcf_fmt_t *baf_fmt, bcf_fmt_t *lrr_fmt, float *baf, float *lrr)
 {
+    *baf = -0.1;
+    *lrr = 0;
+    if ( !smpl->name || smpl->idx<0 ) return 0;
+
     *baf = ((float*)(baf_fmt->p + baf_fmt->size*smpl->idx))[0];
     if ( bcf_float_is_missing(*baf) || isnan(*baf) ) *baf = -0.1;    // arbitrary negative value == missing value
 
@@ -1097,11 +1139,9 @@ static int parse_lrr_baf(sample_t *smpl, bcf_fmt_t *baf_fmt, bcf_fmt_t *lrr_fmt,
     return *baf<0 ? 0 : 1;
 }
 
-int read_AF(bcf_sr_regions_t *tgt, bcf1_t *line, double *alt_freq);
-
 static void cnv_next_line(args_t *args, bcf1_t *line)
 {
-    if ( !line ) 
+    if ( !line )
     {
         // Done, flush viterbi
         cnv_flush_viterbi(args);
@@ -1121,7 +1161,7 @@ static void cnv_next_line(args_t *args, bcf1_t *line)
     args->ntot++;
 
     bcf_fmt_t *baf_fmt, *lrr_fmt = NULL;
-    if ( !(baf_fmt = bcf_get_fmt(args->hdr, line, "BAF")) ) return; 
+    if ( !(baf_fmt = bcf_get_fmt(args->hdr, line, "BAF")) ) return;
     if ( args->lrr_bias>0 && !(lrr_fmt = bcf_get_fmt(args->hdr, line, "LRR")) ) return;
 
     float baf1,lrr1,baf2,lrr2;
@@ -1160,10 +1200,10 @@ static void cnv_next_line(args_t *args, bcf1_t *line)
         args->control_sample.lrr[args->nsites-1] = lrr2;
         args->control_sample.baf[args->nsites-1] = baf2;
         if ( baf2>=0 )  // skip missing values
-            fprintf(args->control_sample.dat_fh,"%s\t%d\t%.3f\t%.3f\n",bcf_hdr_id2name(args->hdr,args->prev_rid), line->pos+1,baf2,lrr2);
+            fprintf(args->control_sample.dat_fh,"%s\t%"PRId64"\t%.3f\t%.3f\n",bcf_hdr_id2name(args->hdr,args->prev_rid), (int64_t) line->pos+1,baf2,lrr2);
     }
     if ( baf1>=0 )  // skip missing values
-        fprintf(args->query_sample.dat_fh,"%s\t%d\t%.3f\t%.3f\n",bcf_hdr_id2name(args->hdr,args->prev_rid), line->pos+1,baf1,lrr1);
+        fprintf(args->query_sample.dat_fh,"%s\t%"PRId64"\t%.3f\t%.3f\n",bcf_hdr_id2name(args->hdr,args->prev_rid), (int64_t) line->pos+1,baf1,lrr1);
 
     if ( baf1>=0 )
     {
@@ -1176,34 +1216,37 @@ static void cnv_next_line(args_t *args, bcf1_t *line)
 
 static void usage(args_t *args)
 {
-    fprintf(pysam_stderr, "\n");
-    fprintf(pysam_stderr, "About:   Copy number variation caller, requires Illumina's B-allele frequency (BAF) and Log R\n");
-    fprintf(pysam_stderr, "         Ratio intensity (LRR). The HMM considers the following copy number states: CN 2\n");
-    fprintf(pysam_stderr, "         (normal), 1 (single-copy loss), 0 (complete loss), 3 (single-copy gain)\n");
-    fprintf(pysam_stderr, "Usage:   bcftools cnv [OPTIONS] <file.vcf>\n");
-    fprintf(pysam_stderr, "General Options:\n");
-    fprintf(pysam_stderr, "    -c, --control-sample <string>      optional control sample name to highlight differences\n");
-    fprintf(pysam_stderr, "    -f, --AF-file <file>               read allele frequencies from file (CHR\\tPOS\\tREF,ALT\\tAF)\n");
-    fprintf(pysam_stderr, "    -o, --output-dir <path>            \n");
-    fprintf(pysam_stderr, "    -p, --plot-threshold <float>       plot aberrant chromosomes with quality at least 'float'\n");
-    fprintf(pysam_stderr, "    -r, --regions <region>             restrict to comma-separated list of regions\n");
-    fprintf(pysam_stderr, "    -R, --regions-file <file>          restrict to regions listed in a file\n");
-    fprintf(pysam_stderr, "    -s, --query-sample <string>        query samply name\n");
-    fprintf(pysam_stderr, "    -t, --targets <region>             similar to -r but streams rather than index-jumps\n");
-    fprintf(pysam_stderr, "    -T, --targets-file <file>          similar to -R but streams rather than index-jumps\n");
-    fprintf(pysam_stderr, "HMM Options:\n");
-    fprintf(pysam_stderr, "    -a, --aberrant <float[,float]>     fraction of aberrant cells in query and control [1.0,1.0]\n");
-    fprintf(pysam_stderr, "    -b, --BAF-weight <float>           relative contribution from BAF [1]\n");
-    fprintf(pysam_stderr, "    -d, --BAF-dev <float[,float]>      expected BAF deviation in query and control [0.04,0.04]\n"); // experimental
-    fprintf(pysam_stderr, "    -e, --err-prob <float>             uniform error probability [1e-4]\n");
-    fprintf(pysam_stderr, "    -k, --LRR-dev <float[,float]>      expected LRR deviation [0.2,0.2]\n"); // experimental
-    fprintf(pysam_stderr, "    -l, --LRR-weight <float>           relative contribution from LRR [0.2]\n");
-    fprintf(pysam_stderr, "    -L, --LRR-smooth-win <int>         window of LRR moving average smoothing [10]\n");
-    fprintf(pysam_stderr, "    -O, --optimize <float>             estimate fraction of aberrant cells down to <float> [1.0]\n");
-    fprintf(pysam_stderr, "    -P, --same-prob <float>            prior probability of -s/-c being the same [0.5]\n");
-    fprintf(pysam_stderr, "    -x, --xy-prob <float>              P(x|y) transition probability [1e-9]\n");
-    fprintf(pysam_stderr, "\n");
-    exit(1);
+    fprintf(bcftools_stderr, "\n");
+    fprintf(bcftools_stderr, "About:   Copy number variation caller, requires Illumina's B-allele frequency (BAF) and Log R\n");
+    fprintf(bcftools_stderr, "         Ratio intensity (LRR). The HMM considers the following copy number states: CN 2\n");
+    fprintf(bcftools_stderr, "         (normal), 1 (single-copy loss), 0 (complete loss), 3 (single-copy gain)\n");
+    fprintf(bcftools_stderr, "Usage:   bcftools cnv [OPTIONS] FILE.vcf\n");
+    fprintf(bcftools_stderr, "General Options:\n");
+    fprintf(bcftools_stderr, "    -c, --control-sample STRING      Optional control sample name to highlight differences\n");
+    fprintf(bcftools_stderr, "    -f, --AF-file FILE               Read allele frequencies from file (CHR\\tPOS\\tREF,ALT\\tAF)\n");
+    fprintf(bcftools_stderr, "    -o, --output-dir PATH            \n");
+    fprintf(bcftools_stderr, "    -p, --plot-threshold FLOAT       Plot aberrant chromosomes with quality at least FLOAT\n");
+    fprintf(bcftools_stderr, "    -r, --regions REGION             Restrict to comma-separated list of regions\n");
+    fprintf(bcftools_stderr, "    -R, --regions-file FILE          Restrict to regions listed in a file\n");
+    fprintf(bcftools_stderr, "        --regions-overlap 0|1|2      Include if POS in the region (0), record overlaps (1), variant overlaps (2) [1]\n");
+    fprintf(bcftools_stderr, "    -s, --query-sample STRING        Query samply name\n");
+    fprintf(bcftools_stderr, "    -t, --targets REGION             Similar to -r but streams rather than index-jumps\n");
+    fprintf(bcftools_stderr, "    -T, --targets-file FILE          Similar to -R but streams rather than index-jumps\n");
+    fprintf(bcftools_stderr, "        --targets-overlap 0|1|2      Include if POS in the region (0), record overlaps (1), variant overlaps (2) [0]\n");
+    fprintf(bcftools_stderr, "    -v, --verbosity INT              Verbosity level\n");
+    fprintf(bcftools_stderr, "HMM Options:\n");
+    fprintf(bcftools_stderr, "    -a, --aberrant FLOAT[,FLOAT]     Fraction of aberrant cells in query and control [1.0,1.0]\n");
+    fprintf(bcftools_stderr, "    -b, --BAF-weight FLOAT           Relative contribution from BAF [1]\n");
+    fprintf(bcftools_stderr, "    -d, --BAF-dev FLOAT[,FLOAT]      Expected BAF deviation in query and control [0.04,0.04]\n"); // experimental
+    fprintf(bcftools_stderr, "    -e, --err-prob FLOAT             Uniform error probability [1e-4]\n");
+    fprintf(bcftools_stderr, "    -k, --LRR-dev FLOAT[,FLOAT]      Expected LRR deviation [0.2,0.2]\n"); // experimental
+    fprintf(bcftools_stderr, "    -l, --LRR-weight FLOAT           Relative contribution from LRR [0.2]\n");
+    fprintf(bcftools_stderr, "    -L, --LRR-smooth-win INT         Window of LRR moving average smoothing [10]\n");
+    fprintf(bcftools_stderr, "    -O, --optimize FLOAT             Estimate fraction of aberrant cells down to FLOAT [1.0]\n");
+    fprintf(bcftools_stderr, "    -P, --same-prob FLOA>            Prior probability of -s/-c being the same [0.5]\n");
+    fprintf(bcftools_stderr, "    -x, --xy-prob FLOAT              P(x|y) transition probability [1e-9]\n");
+    fprintf(bcftools_stderr, "\n");
+    bcftools_exit(1);
 }
 
 int main_vcfcnv(int argc, char *argv[])
@@ -1233,7 +1276,10 @@ int main_vcfcnv(int argc, char *argv[])
     args->query_sample.lrr_dev2 = args->control_sample.lrr_dev2 = 0.2*0.2; //0.20*0.20;   // illumina: 0.18
 
     int regions_is_file = 0, targets_is_file = 0;
-    static struct option loptions[] = 
+    int regions_overlap = 1;
+    int targets_overlap = 0;
+
+    static struct option loptions[] =
     {
         {"BAF-dev",1,0,'d'},
         {"LRR-dev",1,0,'k'},
@@ -1247,25 +1293,31 @@ int main_vcfcnv(int argc, char *argv[])
         {"LRR-weight",1,0,'l'},
         {"same-prob",1,0,'P'},
         {"xy-prob",1,0,'x'},
-        {"sample",1,0,'s'},
-        {"control",1,0,'c'},
+        {"query-sample",1,0,'s'},
+        {"control-sample",1,0,'c'},
         {"targets",1,0,'t'},
         {"targets-file",1,0,'T'},
+        {"targets-overlap",required_argument,NULL,4},
         {"regions",1,0,'r'},
         {"regions-file",1,0,'R'},
-        {"plot",1,0,'p'},
+        {"regions-overlap",required_argument,NULL,3},
+        {"plot-threshold",1,0,'p'},
         {"output-dir",1,0,'o'},
+        {"verbosity",required_argument,NULL,'v'},
         {0,0,0,0}
     };
     char *tmp = NULL;
-    while ((c = getopt_long(argc, argv, "h?r:R:t:T:s:o:p:l:T:c:b:P:x:e:O:W:f:a:L:d:k:",loptions,NULL)) >= 0) {
+    while ((c = getopt_long(argc, argv, "h?r:R:t:T:s:o:p:l:T:c:b:P:x:e:O:W::f:a:L:d:k:v:",loptions,NULL)) >= 0) {
         switch (c) {
-            case 'L': 
+            case 'v':
+                if ( apply_verbosity(optarg) < 0 ) error("Could not parse argument: --verbosity %s\n", optarg);
+                break;
+            case 'L':
                 args->lrr_smooth_win = strtol(optarg,&tmp,10);
                 if ( *tmp ) error("Could not parse: --LRR-smooth-win %s\n", optarg);
                 break;
             case 'f': args->af_fname = optarg; break;
-            case 'O': 
+            case 'O':
                 args->optimize_frac = strtod(optarg,&tmp);
                 if ( *tmp ) error("Could not parse: -O %s\n", optarg);
                 break;
@@ -1308,27 +1360,27 @@ int main_vcfcnv(int argc, char *argv[])
                 args->baum_welch_th = strtod(optarg,&tmp);
                 if ( *tmp ) error("Could not parse: -W %s\n", optarg);
                 break;
-            case 'e': 
+            case 'e':
                 args->err_prob = strtod(optarg,&tmp);
                 if ( *tmp ) error("Could not parse: -e %s\n", optarg);
                 break;
-            case 'b': 
+            case 'b':
                 args->baf_bias = strtod(optarg,&tmp);
                 if ( *tmp ) error("Could not parse: -b %s\n", optarg);
                 break;
-            case 'x': 
+            case 'x':
                 args->ij_prob = strtod(optarg,&tmp);
                 if ( *tmp ) error("Could not parse: -x %s\n", optarg);
                 break;
-            case 'P': 
+            case 'P':
                 args->same_prob = strtod(optarg,&tmp);
                 if ( *tmp ) error("Could not parse: -P %s\n", optarg);
                 break;
-            case 'l': 
+            case 'l':
                 args->lrr_bias = strtod(optarg,&tmp);
                 if ( *tmp ) error("Could not parse: -l %s\n", optarg);
                 break;
-            case 'p': 
+            case 'p':
                 args->plot_th = strtod(optarg,&tmp);
                 if ( *tmp ) error("Could not parse: -p %s\n", optarg);
                 break;
@@ -1339,7 +1391,15 @@ int main_vcfcnv(int argc, char *argv[])
             case 'T': args->targets_list = optarg; targets_is_file = 1; break;
             case 'r': args->regions_list = optarg; break;
             case 'R': args->regions_list = optarg; regions_is_file = 1; break;
-            case 'h': 
+            case  3 :
+                regions_overlap = parse_overlap_option(optarg);
+                if ( regions_overlap < 0 ) error("Could not parse: --regions-overlap %s\n",optarg);
+                break;
+            case  4 :
+                targets_overlap = parse_overlap_option(optarg);
+                if ( targets_overlap < 0 ) error("Could not parse: --targets-overlap %s\n",optarg);
+                break;
+            case 'h':
             case '?': usage(args); break;
             default: error("Unknown argument: %s\n", optarg);
         }
@@ -1353,14 +1413,16 @@ int main_vcfcnv(int argc, char *argv[])
     else fname = argv[optind];
     if ( !fname ) usage(args);
 
-    if ( args->plot_th<=100 && !args->output_dir ) error("Expected -o option with -p\n");
+    if ( !args->output_dir ) error("Expected -o option\n");
     if ( args->regions_list )
     {
+        bcf_sr_set_opt(args->files,BCF_SR_REGIONS_OVERLAP,regions_overlap);
         if ( bcf_sr_set_regions(args->files, args->regions_list, regions_is_file)<0 )
             error("Failed to read the regions: %s\n", args->regions_list);
     }
     if ( args->targets_list )
     {
+        bcf_sr_set_opt(args->files,BCF_SR_TARGETS_OVERLAP,targets_overlap);
         if ( bcf_sr_set_targets(args->files, args->targets_list, targets_is_file, 0)<0 )
             error("Failed to read the targets: %s\n", args->targets_list);
     }
@@ -1369,17 +1431,19 @@ int main_vcfcnv(int argc, char *argv[])
         if ( bcf_sr_set_targets(args->files, args->af_fname, 1, 3)<0 )
             error("Failed to read the targets: %s\n", args->af_fname);
     }
-    if ( !bcf_sr_add_reader(args->files, fname) ) error("Failed to open %s: %s\n", fname,bcf_sr_strerror(args->files->errnum));
-    
+    if ( !bcf_sr_add_reader(args->files, fname) )
+        error("Failed to read from %s: %s\n", !strcmp("-",fname)?"standard input":fname,bcf_sr_strerror(args->files->errnum));
+
     init_data(args);
     while ( bcf_sr_next_line(args->files) )
     {
         bcf1_t *line = bcf_sr_get_line(args->files,0);
         cnv_next_line(args, line);
     }
+    if ( args->files->errnum ) error("Error: %s\n", bcf_sr_strerror(args->files->errnum));
     cnv_next_line(args, NULL);
     create_plots(args);
-    fprintf(pysam_stderr,"Number of lines: total/processed: %d/%d\n", args->ntot,args->nused);
+    fprintf(bcftools_stderr,"Number of lines: total/processed: %d/%d\n", args->ntot,args->nused);
     destroy_data(args);
     free(args);
     return 0;

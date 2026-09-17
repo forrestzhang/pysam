@@ -1,8 +1,8 @@
-#include "pysam.h"
+#include "samtools.pysam.h"
 
 /* bam_addrprg.c -- samtools command to add or replace readgroups.
 
-   Copyright (c) 2013, 2015 Genome Research Limited.
+   Copyright (c) 2013, 2015-2017, 2019-2021, 2025 Genome Research Limited.
 
    Author: Martin O. Pollard <mp15@sanger.ac.uk>
 
@@ -29,6 +29,7 @@ DEALINGS IN THE SOFTWARE.  */
 #include <htslib/sam.h>
 #include <htslib/kstring.h>
 #include "samtools.h"
+#include "htslib/thread_pool.h"
 #include "sam_opts.h"
 #include <string.h>
 #include <stdio.h>
@@ -48,8 +49,12 @@ struct parsed_opts {
     char* output_name;
     char* rg_id;
     char* rg_line;
+    int no_pg;
     rg_mode mode;
     sam_global_args ga;
+    htsThreadPool p;
+    int uncompressed;
+    int overwrite_hdr_rg;
 };
 
 struct state;
@@ -58,9 +63,9 @@ typedef struct state state_t;
 
 struct state {
     samFile* input_file;
-    bam_hdr_t* input_header;
+    sam_hdr_t* input_header;
     samFile* output_file;
-    bam_hdr_t* output_header;
+    sam_hdr_t* output_header;
     char* rg_id;
     void (*mode_func)(const state_t*, bam1_t*);
 };
@@ -71,19 +76,34 @@ static void cleanup_opts(parsed_opts_t* opts)
     free(opts->rg_id);
     free(opts->output_name);
     free(opts->input_name);
+    free(opts->rg_line);
+    if (opts->p.pool) hts_tpool_destroy(opts->p.pool);
     sam_global_args_free(&opts->ga);
     free(opts);
 }
 
-static void cleanup_state(state_t* state)
+static bool cleanup_state(state_t* state)
 {
-    if (!state) return;
+    if (!state) return false;
     free(state->rg_id);
-    if (state->output_file) sam_close(state->output_file);
-    bam_hdr_destroy(state->output_header);
-    if (state->input_file) sam_close(state->input_file);
-    bam_hdr_destroy(state->input_header);
+
+    bool clean_exit = true;
+    if (state->output_file) {
+        if (sam_close(state->output_file) != 0) {
+            print_error_errno("addreplacerg", "[cleanup_state] Error closing SAM output file");
+            clean_exit = false;
+        }
+    }
+    sam_hdr_destroy(state->output_header);
+    if (state->input_file) {
+        if (sam_close(state->input_file) != 0) {
+            print_error_errno("addreplacerg", "[cleanup_state] Error closing SAM input file");
+            clean_exit = false;
+        }
+    }
+    sam_hdr_destroy(state->input_header);
     free(state);
+    return clean_exit;
 }
 
 // Converts \t and \n into real tabs and newlines
@@ -97,7 +117,7 @@ static char* basic_unescape(const char* in)
         if (*in == '\\') {
             ++in;
             if (*in == '\0') {
-                fprintf(pysam_stderr, "[%s] Unterminated escape sequence.\n", __func__);
+                fprintf(samtools_stderr, "[%s] Unterminated escape sequence.\n", __func__);
                 free(out);
                 return NULL;
             }
@@ -109,11 +129,11 @@ static char* basic_unescape(const char* in)
                 *ptr = '\t';
                 break;
             case 'n':
-                fprintf(pysam_stderr, "[%s] \\n in escape sequence is not supported.\n", __func__);
+                fprintf(samtools_stderr, "[%s] \\n in escape sequence is not supported.\n", __func__);
                 free(out);
                 return NULL;
             default:
-                fprintf(pysam_stderr, "[%s] Unsupported escape sequence.\n", __func__);
+                fprintf(samtools_stderr, "[%s] Unsupported escape sequence.\n", __func__);
                 free(out);
                 return NULL;
             }
@@ -133,106 +153,46 @@ static char* basic_unescape(const char* in)
     return tmp;
 }
 
-// These are to be replaced by samtools header parser
-// Extracts the first @RG line from a string.
-static char* get_rg_line(const char* text, size_t* last)
+// Malloc a string containing [s,slim) or to the end of s if slim is NULL.
+// If lenp is non-NULL, stores the length of the resulting string there.
+static char *dup_substring(const char *s, const char *slim, size_t *lenp)
 {
-    const char* rg = text;
-    if (rg[0] != '@' || rg[1] != 'R' || rg[2] != 'G' ) {
-        if ((rg = (const char*)strstr(text,"\n@RG")) == NULL) {
-            return NULL;
-        }
-        rg++;//skip initial \n
-    }
-    // duplicate the line for return
-    char* line;
-    char* end = strchr(rg, '\n');
-    if (end) {
-        line = strndup(rg,(end-rg));
-        *last = end - rg;
-    } else {
-        line = strdup(rg);
-        *last = strlen(rg);
-    }
-    return line;
+    size_t len = slim? (slim - s) : strlen(s);
+    char *ns = malloc(len+1);
+    if (ns == NULL) return NULL;
+    memcpy(ns, s, len);
+    ns[len] = '\0';
+    if (lenp) *lenp = len;
+    return ns;
 }
+
 
 // Given a @RG line return the id
-static char* get_rg_id(const char* input)
+static char* get_rg_id(const char *line)
 {
-    assert(input!=NULL);
-    char* line = strdup(input);
-    char *next = line;
-    char* token = strsep(&next, "\t");
-    token = strsep(&next,"\t"); // skip first token it should always be "@RG"
-    while (next != NULL) {
-        char* key = strsep(&token,":");
-        if (!strcmp(key,"ID")) {
-            char* retval = strdup(token);
-            free(line);
-            return retval;
-        }
-        token = strsep(&next,"\t");
-    }
-    free(line);
-    return NULL;
+    const char *id = strstr(line, "\tID:");
+    if (! id) return NULL;
+
+    id += 4;
+    return dup_substring(id, strchr(id, '\t'), NULL);
 }
 
-// Confirms the existance of an RG line with a given ID in a bam header
-static bool confirm_rg( const bam_hdr_t *hdr, const char* rgid )
-{
-    assert( hdr != NULL && rgid != NULL );
-
-    char *ptr, *start;
-    bool found = false;
-    start = ptr = strndup(hdr->text, hdr->l_text);
-    while (ptr != NULL && *ptr != '\0' && found == false ) {
-        size_t end = 0;
-        char* line = get_rg_line(ptr, &end);
-        if (line == NULL) break; // No more @RG
-        char* id;
-        if (((id = get_rg_id(line)) != NULL) && !strcmp(id, rgid)) {
-            found = true;
-        }
-        free(id);
-        free(line);
-        ptr += end;
-    }
-    free(start);
-    return found;
-}
-
-static char* get_first_rgid( const bam_hdr_t *hdr )
-{
-    assert( hdr != NULL );
-    char *ptr, *start;
-    char* found = NULL;
-    start = ptr = strndup(hdr->text, hdr->l_text);
-    while (ptr != NULL && *ptr != '\0' && found == NULL ) {
-        size_t end = 0;
-        char* line = get_rg_line(ptr, &end);
-        if ( line ) {
-            found = get_rg_id(line);
-        } else break;
-        free(line);
-        ptr += end;
-    }
-    free(start);
-    return found;
-}
 
 static void usage(FILE *fp)
 {
     fprintf(fp,
-            "Usage: samtools addreplacerg [options] [-r <@RG line> | -R <existing id>] [-o <output.bam>] <input.bam>\n"
+            "Usage: samtools addreplacerg [options] [-r <@RG line> | -R <existing id>] [-m orphan_only|overwrite_all] [-o <output.bam>] <input.bam>\n"
             "\n"
             "Options:\n"
             "  -m MODE   Set the mode of operation from one of overwrite_all, orphan_only [overwrite_all]\n"
-            "  -o FILE   Where to write output to [pysam_stdout]\n"
+            "  -o FILE   Where to write output to [samtools_stdout]\n"
             "  -r STRING @RG line text\n"
             "  -R STRING ID of @RG line in existing header to use\n"
+            "  -u        Output uncompressed data\n"
+            "  -w        Overwrite an existing @RG line\n"
+            "  --no-PG   Do not add a PG line\n"
             );
-    sam_global_opt_help(fp, "..O..");
+    sam_global_opt_help(fp, "..O..@..");
 }
 
 static bool parse_args(int argc, char** argv, parsed_opts_t** opts)
@@ -240,23 +200,24 @@ static bool parse_args(int argc, char** argv, parsed_opts_t** opts)
     *opts = NULL;
     int n;
 
-    if (argc == 1) { usage(pysam_stdout); return true; }
+    if (argc == 1) { usage(samtools_stdout); return true; }
 
     parsed_opts_t* retval = calloc(1, sizeof(parsed_opts_t));
     if (! retval ) {
-        fprintf(pysam_stderr, "[%s] Out of memory allocating parsed_opts_t\n", __func__);
+        fprintf(samtools_stderr, "[%s] Out of memory allocating parsed_opts_t\n", __func__);
         return false;
     }
     // Set defaults
     retval->mode = overwrite_all;
     sam_global_args_init(&retval->ga);
     static const struct option lopts[] = {
-        SAM_OPT_GLOBAL_OPTIONS(0, 0, 'O', 0, 0),
+        SAM_OPT_GLOBAL_OPTIONS(0, 0, 'O', 0, 0, '@'),
+        {"no-PG", no_argument, NULL, 1},
         { NULL, 0, NULL, 0 }
     };
     kstring_t rg_line = {0,0,NULL};
 
-    while ((n = getopt_long(argc, argv, "r:R:m:o:O:l:h", lopts, NULL)) >= 0) {
+    while ((n = getopt_long(argc, argv, "r:R:m:o:O:h@:uw", lopts, NULL)) >= 0) {
         switch (n) {
             case 'r':
                 // Are we adding to existing rg line?
@@ -278,7 +239,7 @@ static bool parse_args(int argc, char** argv, parsed_opts_t** opts)
                 } else if (strcmp(optarg, "orphan_only") == 0) {
                     retval->mode = orphan_only;
                 } else {
-                    usage(pysam_stderr);
+                    usage(samtools_stderr);
                     return false;
                 }
                 break;
@@ -287,17 +248,26 @@ static bool parse_args(int argc, char** argv, parsed_opts_t** opts)
                 retval->output_name = strdup(optarg);
                 break;
             case 'h':
-                usage(pysam_stdout);
+                usage(samtools_stdout);
                 free(retval);
                 return true;
+            case 1:
+                retval->no_pg = 1;
+                break;
+            case 'u':
+                retval->uncompressed = 1;
+                break;
+            case 'w':
+                retval->overwrite_hdr_rg = 1;
+                break;
             case '?':
-                usage(pysam_stderr);
+                usage(samtools_stderr);
                 free(retval);
                 return false;
             case 'O':
             default:
                 if (parse_sam_global_opt(n, optarg, lopts, &retval->ga) == 0) break;
-                usage(pysam_stderr);
+                usage(samtools_stderr);
                 free(retval);
                 return false;
         }
@@ -305,13 +275,13 @@ static bool parse_args(int argc, char** argv, parsed_opts_t** opts)
     retval->rg_line = ks_release(&rg_line);
 
     if (argc-optind < 1) {
-        fprintf(pysam_stderr, "You must specify an input file.\n");
-        usage(pysam_stderr);
+        fprintf(samtools_stderr, "You must specify an input file.\n");
+        usage(samtools_stderr);
         cleanup_opts(retval);
         return false;
     }
     if (retval->rg_id && retval->rg_line) {
-        fprintf(pysam_stderr, "The options -r and -R are mutually exclusive.\n");
+        fprintf(samtools_stderr, "The options -r and -R are mutually exclusive.\n");
         cleanup_opts(retval);
         return false;
     }
@@ -321,14 +291,22 @@ static bool parse_args(int argc, char** argv, parsed_opts_t** opts)
         char* tmp = basic_unescape(retval->rg_line);
 
         if ((retval->rg_id = get_rg_id(tmp)) == NULL) {
-            fprintf(pysam_stderr, "[%s] The supplied RG line lacks an ID tag.\n", __func__);
+            fprintf(samtools_stderr, "[%s] The supplied RG line lacks an ID tag.\n", __func__);
             free(tmp);
             cleanup_opts(retval);
             return false;
         }
+        free(retval->rg_line);
         retval->rg_line = tmp;
     }
     retval->input_name = strdup(argv[optind+0]);
+
+    if (retval->ga.nthreads > 0) {
+        if (!(retval->p.pool = hts_tpool_init(retval->ga.nthreads))) {
+            fprintf(samtools_stderr, "Error creating thread pool\n");
+            return false;
+        }
+    }
 
     *opts = retval;
     return true;
@@ -361,9 +339,11 @@ static void orphan_only_func(const state_t* state, bam1_t* file_read)
 }
 
 static bool init(const parsed_opts_t* opts, state_t** state_out) {
+    char output_mode[9] = "w";
     state_t* retval = (state_t*) calloc(1, sizeof(state_t));
+
     if (retval == NULL) {
-        fprintf(pysam_stderr, "[init] Out of memory allocating state struct.\n");
+        fprintf(samtools_stderr, "[init] Out of memory allocating state struct.\n");
         return false;
     }
     *state_out = retval;
@@ -371,50 +351,77 @@ static bool init(const parsed_opts_t* opts, state_t** state_out) {
     // Open files
     retval->input_file = sam_open_format(opts->input_name, "r", &opts->ga.in);
     if (retval->input_file == NULL) {
-        fprintf(pysam_stderr, "[init] Could not open input file: %s\n", opts->input_name);
+        print_error_errno("addreplacerg", "could not open \"%s\"", opts->input_name);
         return false;
     }
     retval->input_header = sam_hdr_read(retval->input_file);
 
-    retval->output_header = bam_hdr_dup(retval->input_header);
-    retval->output_file = sam_open_format(opts->output_name == NULL?"-":opts->output_name, "w", &opts->ga.out);
+    retval->output_header = sam_hdr_dup(retval->input_header);
+
+    if (opts->uncompressed)
+        strcat(output_mode, "0");
+    if (opts->output_name) { // File format auto-detection
+        sam_open_mode(output_mode + strlen(output_mode),
+                      opts->output_name, NULL);
+    }
+    retval->output_file = sam_open_format(opts->output_name == NULL?"-":opts->output_name, output_mode, &opts->ga.out);
 
     if (retval->output_file == NULL) {
-        print_error_errno("addreplacerg", "Could not open output file: %s\n", opts->output_name);
+        print_error_errno("addreplacerg", "could not create \"%s\"", opts->output_name);
         return false;
+    }
+
+    if (opts->p.pool) {
+        hts_set_opt(retval->input_file,  HTS_OPT_THREAD_POOL, &opts->p);
+        hts_set_opt(retval->output_file, HTS_OPT_THREAD_POOL, &opts->p);
     }
 
     if (opts->rg_line) {
         // Append new RG line to header.
         // Check does not already exist
-        if ( confirm_rg(retval->output_header, opts->rg_id) ) {
-            fprintf(pysam_stderr, "[init] ID of new RG line specified conflicts with that of an existing header RG line. Overwrite not yet implemented.\n");
+        kstring_t hdr_line = { 0, 0, NULL };
+        if (sam_hdr_find_line_id(retval->output_header, "RG", "ID", opts->rg_id, &hdr_line) == 0) {
+            if (opts->overwrite_hdr_rg) {
+                if(-1 == sam_hdr_remove_line_id(retval->output_header, "RG", "ID", opts->rg_id)) {
+                    fprintf(samtools_stderr, "[init] Error removing the RG line with ID:%s from the output header.\n", opts->rg_id);
+                    ks_free(&hdr_line);
+                    return false;
+                }
+            } else {
+                fprintf(samtools_stderr, "[init] RG line with ID:%s already present in the header. Use -w to overwrite.\n", opts->rg_id);
+                ks_free(&hdr_line);
+                return false;
+            }
+        }
+        ks_free(&hdr_line);
+
+        if (-1 == sam_hdr_add_lines(retval->output_header, opts->rg_line, strlen(opts->rg_line))) {
+            fprintf(samtools_stderr, "[init] Error adding RG line with ID:%s to the output header.\n", opts->rg_id);
+            return false;
+        }
+        if (opts->mode == overwrite_all &&
+            -1 == sam_hdr_remove_except(retval->output_header, "RG", "ID", opts->rg_id)) {
+            fprintf(samtools_stderr, "[init] Error removing the old RG lines from the output header.\n");
             return false;
         }
         retval->rg_id = strdup(opts->rg_id);
-        size_t new_len = strlen( retval->output_header->text ) + strlen( opts->rg_line ) + 2;
-        char* new_header = malloc(new_len);
-        if (!new_header) {
-            fprintf(pysam_stderr, "[init] Out of memory whilst writing new header.\n");
-            return false;
-        }
-        sprintf(new_header,"%s%s\n", retval->output_header->text, opts->rg_line);
-        free(retval->output_header->text);
-        retval->output_header->text = new_header;
-        retval->output_header->l_text = (int)new_len - 1;
     } else {
         if (opts->rg_id) {
             // Confirm what has been supplied exists
-            if ( !confirm_rg(retval->output_header, opts->rg_id) ) {
-                fprintf(pysam_stderr, "RG ID supplied does not exist in header. Supply full @RG line with -r instead?\n");
+            kstring_t hdr_line = { 0, 0, NULL };
+            if (sam_hdr_find_line_id(retval->output_header, "RG", "ID", opts->rg_id, &hdr_line) < 0) {
+                fprintf(samtools_stderr, "RG ID supplied does not exist in header. Supply full @RG line with -r instead?\n");
                 return false;
             }
             retval->rg_id = strdup(opts->rg_id);
+            ks_free(&hdr_line);
         } else {
-            if ((retval->rg_id = get_first_rgid(retval->output_header)) == NULL ) {
-                fprintf(pysam_stderr, "No RG specified on command line or in existing header.\n");
+            kstring_t rg_id = { 0, 0, NULL };
+            if (sam_hdr_find_tag_id(retval->output_header, "RG", NULL, NULL, "ID", &rg_id) < 0) {
+                fprintf(samtools_stderr, "No RG specified on command line or in existing header.\n");
                 return false;
             }
+            retval->rg_id = ks_release(&rg_id);
         }
     }
 
@@ -430,11 +437,26 @@ static bool init(const parsed_opts_t* opts, state_t** state_out) {
     return true;
 }
 
-static bool readgroupise(state_t* state)
+static bool readgroupise(parsed_opts_t *opts, state_t* state, char *arg_list)
 {
+    // Write PG line to header
+    if (!opts->no_pg && sam_hdr_add_pg(state->output_header, "samtools",
+                                       "VN", samtools_version(),
+                                       arg_list ? "CL": NULL,
+                                       arg_list ? arg_list : NULL,
+                                       NULL))
+        return false;
+
+    // Write header to output
     if (sam_hdr_write(state->output_file, state->output_header) != 0) {
         print_error_errno("addreplacerg", "[%s] Could not write header to output file", __func__);
         return false;
+    }
+    // Write index if requested
+    char *idx_fn = NULL;
+    if (opts->ga.write_index) {
+        if (!(idx_fn = auto_index(state->output_file, opts->output_name, state->output_header)))
+            return false;
     }
 
     bam1_t* file_read = bam_init1();
@@ -445,14 +467,24 @@ static bool readgroupise(state_t* state)
         if (sam_write1(state->output_file, state->output_header, file_read) < 0) {
             print_error_errno("addreplacerg", "[%s] Could not write read to output file", __func__);
             bam_destroy1(file_read);
+            free(idx_fn);
             return false;
         }
     }
     bam_destroy1(file_read);
     if (ret != -1) {
         print_error_errno("addreplacerg", "[%s] Error reading from input file", __func__);
+        free(idx_fn);
         return false;
     } else {
+        if (opts->ga.write_index) {
+            if (sam_idx_save(state->output_file) < 0) {
+                print_error_errno("addreplacerg", "[%s] Writing index failed", __func__);
+                free(idx_fn);
+                return false;
+            }
+        }
+        free(idx_fn);
         return true;
     }
 }
@@ -461,20 +493,26 @@ int main_addreplacerg(int argc, char** argv)
 {
     parsed_opts_t* opts = NULL;
     state_t* state = NULL;
+    char *arg_list = stringify_argv(argc+1, argv-1);
+    if (!arg_list)
+        return EXIT_FAILURE;
 
     if (!parse_args(argc, argv, &opts)) goto error;
-    if (opts == NULL) return EXIT_SUCCESS; // Not an error but user doesn't want us to proceed
-    if (!opts || !init(opts, &state)) goto error;
+    if (opts) { // Not an error but user doesn't want us to proceed
+        if (!init(opts, &state) || !readgroupise(opts, state, arg_list))
+            goto error;
+    }
 
-    if (!readgroupise(state)) goto error;
-
+    int final_state = EXIT_SUCCESS;
+    if (!cleanup_state(state)) { final_state = EXIT_FAILURE; }
     cleanup_opts(opts);
-    cleanup_state(state);
+    free(arg_list);
 
-    return EXIT_SUCCESS;
+    return final_state;
 error:
-    cleanup_opts(opts);
     cleanup_state(state);
+    cleanup_opts(opts);
+    free(arg_list);
 
     return EXIT_FAILURE;
 }

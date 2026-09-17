@@ -1,9 +1,9 @@
-#include "pysam.h"
+#include "samtools.pysam.h"
 
 /*  cut_target.c -- targetcut subcommand.
 
     Copyright (C) 2011 Broad Institute.
-    Copyright (C) 2012-2013, 2015 Genome Research Ltd.
+    Copyright (C) 2012-2013, 2015, 2016, 2019 Genome Research Ltd.
 
     Author: Heng Li <lh3@sanger.ac.uk>
 
@@ -30,9 +30,10 @@ DEALINGS IN THE SOFTWARE.  */
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include "htslib/hts.h"
 #include "htslib/sam.h"
-#include "errmod.h"
 #include "htslib/faidx.h"
+#include "samtools.h"
 #include "sam_opts.h"
 
 #define ERR_DEP 0.83
@@ -50,9 +51,9 @@ typedef struct {
     int min_baseQ, tid, max_bases;
     uint16_t *bases;
     samFile *fp;
-    bam_hdr_t *h;
+    sam_hdr_t *h;
     char *ref;
-    int len;
+    hts_pos_t len;
     faidx_t *fai;
     errmod_t *em;
 } ct_t;
@@ -64,7 +65,7 @@ static uint16_t gencns(ct_t *g, int n, const bam_pileup1_t *plp)
     if (n > g->max_bases) { // enlarge g->bases
         g->max_bases = n;
         kroundup32(g->max_bases);
-        g->bases = realloc(g->bases, g->max_bases * 2);
+        g->bases = realloc(g->bases, (size_t) g->max_bases * 2);
     }
     for (i = k = 0; i < n; ++i) {
         const bam_pileup1_t *p = plp + i;
@@ -93,9 +94,10 @@ static uint16_t gencns(ct_t *g, int n, const bam_pileup1_t *plp)
     return ret<<8|k;
 }
 
-static void process_cns(bam_hdr_t *h, int tid, int l, uint16_t *cns)
+static void process_cns(sam_hdr_t *h, int tid, hts_pos_t l, uint16_t *cns)
 {
-    int i, f[2][2], *prev, *curr, *swap_tmp, s;
+    int64_t i, s;
+    int f[2][2], *prev, *curr, *swap_tmp;
     uint8_t *b; // backtrack array
     b = calloc(l, 1);
     f[0][0] = f[0][1] = 0;
@@ -124,22 +126,22 @@ static void process_cns(bam_hdr_t *h, int tid, int l, uint16_t *cns)
         s = b[i]>>s&1;
     }
     // print
-    for (i = 0, s = -1; i <= l; ++i) {
+    for (i = 0, s = -1; i < INT64_MAX && i <= l; ++i) {
         if (i == l || ((b[i]>>2&3) == 0 && s >= 0)) {
             if (s >= 0) {
-                int j;
-                fprintf(pysam_stdout, "%s:%d-%d\t0\t%s\t%d\t60\t%dM\t*\t0\t0\t", h->target_name[tid], s+1, i, h->target_name[tid], s+1, i-s);
+                int64_t j;
+                fprintf(samtools_stdout, "%s:%"PRId64"-%"PRId64"\t0\t%s\t%"PRId64"\t60\t%"PRId64"M\t*\t0\t0\t", sam_hdr_tid2name(h, tid), s+1, i, sam_hdr_tid2name(h, tid), s+1, i-s);
                 for (j = s; j < i; ++j) {
                     int c = cns[j]>>8;
-                    if (c == 0) fputc('N', pysam_stdout);
-                    else fputc("ACGT"[c&3], pysam_stdout);
+                    if (c == 0) fputc('N', samtools_stdout);
+                    else fputc("ACGT"[c&3], samtools_stdout);
                 }
-                fputc('\t', pysam_stdout);
+                fputc('\t', samtools_stdout);
                 for (j = s; j < i; ++j)
-                    fputc(33 + (cns[j]>>8>>2), pysam_stdout);
-                fputc('\n', pysam_stdout);
+                    fputc(33 + (cns[j]>>8>>2), samtools_stdout);
+                fputc('\n', samtools_stdout);
             }
-            //if (s >= 0) fprintf(pysam_stdout, "%s\t%d\t%d\t%d\n", h->target_name[tid], s, i, i - s);
+            //if (s >= 0) fprintf(samtools_stdout, "%s\t%d\t%d\t%d\n", h->target_name[tid], s, i, i - s);
             s = -1;
         } else if ((b[i]>>2&3) && s < 0) s = i;
     }
@@ -148,7 +150,6 @@ static void process_cns(bam_hdr_t *h, int tid, int l, uint16_t *cns)
 
 static int read_aln(void *data, bam1_t *b)
 {
-    extern int bam_prob_realn_core(bam1_t *b, const char *ref, int ref_len, int flag);
     ct_t *g = (ct_t*)data;
     int ret;
     while (1)
@@ -159,10 +160,10 @@ static int read_aln(void *data, bam1_t *b)
         if ( g->fai && b->core.tid >= 0 ) {
             if (b->core.tid != g->tid) { // then load the sequence
                 free(g->ref);
-                g->ref = fai_fetch(g->fai, g->h->target_name[b->core.tid], &g->len);
+                g->ref = fai_fetch64(g->fai, sam_hdr_tid2name(g->h, b->core.tid), &g->len);
                 g->tid = b->core.tid;
             }
-            bam_prob_realn_core(b, g->ref, g->len, 1<<1|1);
+            sam_prob_realn(b, g->ref, g->len, 1<<1|1);
         }
         break;
     }
@@ -171,7 +172,8 @@ static int read_aln(void *data, bam1_t *b)
 
 int main_cut_target(int argc, char *argv[])
 {
-    int c, tid, pos, n, lasttid = -1, l, max_l, usage = 0;
+    int c, tid, pos, n, lasttid = -1, usage = 0, status = EXIT_SUCCESS;
+    hts_pos_t l, max_l;
     const bam_pileup1_t *p;
     bam_plp_t plp;
     uint16_t *cns;
@@ -179,7 +181,7 @@ int main_cut_target(int argc, char *argv[])
 
     sam_global_args ga = SAM_GLOBAL_ARGS_INIT;
     static const struct option lopts[] = {
-        SAM_OPT_GLOBAL_OPTIONS('-', 0, '-', '-', 'f'),
+        SAM_OPT_GLOBAL_OPTIONS('-', 0, '-', '-', 'f', '-'),
         { NULL, 0, NULL, 0 }
     };
 
@@ -199,18 +201,23 @@ int main_cut_target(int argc, char *argv[])
     }
     if (ga.reference) {
         g.fai = fai_load(ga.reference);
-        if (g.fai == 0) fprintf(pysam_stderr, "[%s] fail to load the fasta index.\n", __func__);
+        if (g.fai == 0) fprintf(samtools_stderr, "[%s] fail to load the fasta index.\n", __func__);
     }
     if (usage || argc == optind) {
-        fprintf(pysam_stderr, "Usage: samtools targetcut [-Q minQ] [-i inPen] [-0 em0] [-1 em1] [-2 em2] <in.bam>\n");
-        sam_global_opt_help(pysam_stderr, "-.--f");
+        fprintf(samtools_stderr, "Usage: samtools targetcut [-Q minQ] [-i inPen] [-0 em0] [-1 em1] [-2 em2] <in.bam>\n");
+        sam_global_opt_help(samtools_stderr, "-.--f--.");
         return 1;
     }
     l = max_l = 0; cns = 0;
     g.fp = sam_open_format(argv[optind], "r", &ga.in);
+    if (g.fp == NULL) {
+        print_error_errno("targetcut", "can't open \"%s\"", argv[optind]);
+        return 1;
+    }
+
     g.h = sam_hdr_read(g.fp);
     if (g.h == NULL) {
-        fprintf(pysam_stderr, "Couldn't read header for '%s'\n", argv[optind]);
+        print_error("targetcut", "couldn't read header for \"%s\"", argv[optind]);
         sam_close(g.fp);
         return 1;
     }
@@ -220,20 +227,26 @@ int main_cut_target(int argc, char *argv[])
         if (tid < 0) break;
         if (tid != lasttid) { // change of chromosome
             if (cns) process_cns(g.h, lasttid, l, cns);
-            if (max_l < g.h->target_len[tid]) {
-                max_l = g.h->target_len[tid];
+            if (max_l < sam_hdr_tid2len(g.h, tid)) {
+                max_l = sam_hdr_tid2len(g.h, tid);
                 kroundup32(max_l);
                 cns = realloc(cns, max_l * 2);
             }
-            l = g.h->target_len[tid];
+            l = sam_hdr_tid2len(g.h, tid);
             memset(cns, 0, max_l * 2);
             lasttid = tid;
         }
         cns[pos] = gencns(&g, n, p);
     }
     process_cns(g.h, lasttid, l, cns);
+
+    if (n < 0) {
+        print_error("targetcut", "error reading from \"%s\"", argv[optind]);
+        status = EXIT_FAILURE;
+    }
+
     free(cns);
-    bam_hdr_destroy(g.h);
+    sam_hdr_destroy(g.h);
     bam_plp_destroy(plp);
     sam_close(g.fp);
     if (g.fai) {
@@ -242,5 +255,5 @@ int main_cut_target(int argc, char *argv[])
     errmod_destroy(g.em);
     free(g.bases);
     sam_global_args_free(&ga);
-    return 0;
+    return status;
 }

@@ -1,8 +1,8 @@
-#include "pysam.h"
+#include "bcftools.pysam.h"
 
 /*  vcfstats.c -- Produces stats which can be plotted using plot-vcfstats.
 
-    Copyright (C) 2012-2015 Genome Research Ltd.
+    Copyright (C) 2012-2026 Genome Research Ltd.
 
     Author: Petr Danecek <pd3@sanger.ac.uk>
 
@@ -33,14 +33,18 @@ THE SOFTWARE.  */
 #include <stdarg.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <assert.h>
 #include <math.h>
 #include <htslib/vcf.h>
 #include <htslib/synced_bcf_reader.h>
 #include <htslib/vcfutils.h>
 #include <htslib/faidx.h>
+#include <htslib/hts_endian.h>
 #include <inttypes.h>
 #include "bcftools.h"
 #include "filter.h"
+#include "bin.h"
+#include "dist.h"
 
 // Logic of the filters: include or exclude sites which match the filters?
 #define FLT_INCLUDE 1
@@ -58,7 +62,7 @@ typedef struct
     float min, max;
     uint64_t *vals_ts, *vals_tv;
     void *val;
-    int nbins, type, m_val;
+    int nbins, type, m_val, idx;
 }
 user_stats_t;
 
@@ -69,20 +73,16 @@ typedef struct
 }
 idist_t;
 
+// variant allele frequency (fraction of alt allele in pileup as determined from AD) collected into 0.05 bins
 typedef struct
 {
-    double x;
-    double x2;
-    double y;
-    double y2;
-    double xy;
-    double n;
+    int snv[21], indel[21];
 }
-smpl_r_t;
+vaf_t;
 
 typedef struct
 {
-    int n_snps, n_indels, n_mnps, n_others, n_mals, n_snp_mals, n_records, n_noalts;
+    uint64_t n_snps, n_indels, n_mnps, n_others, n_mals, n_snp_mals, n_records, n_noalts;
     int *af_ts, *af_tv, *af_snps;   // first bin of af_* stats are singletons
     #if HWE_STATS
         int *af_hwe;
@@ -93,26 +93,37 @@ typedef struct
     #endif
     int ts_alt1, tv_alt1;
     #if QUAL_STATS
-        int *qual_ts, *qual_tv, *qual_snps, *qual_indels;
+        // Values are rounded to one significant digit and 1 is added (Q*10+1); missing and negative values go in the first bin
+        // Only SNPs that are the 1st alternate allele are counted
+        dist_t *qual_ts, *qual_tv, *qual_indels;
     #endif
     int *insertions, *deletions, m_indel;   // maximum indel length
     int in_frame, out_frame, na_frame, in_frame_alt1, out_frame_alt1, na_frame_alt1;
     int subst[15];
     int *smpl_hets, *smpl_homRR, *smpl_homAA, *smpl_ts, *smpl_tv, *smpl_indels, *smpl_ndp, *smpl_sngl;
-    int *smpl_indel_hets, *smpl_indel_homs;
-    int *smpl_frm_shifts; // not-applicable, in-frame, out-frame
+    int *smpl_hapRef, *smpl_hapAlt, *smpl_missing;
+    int *smpl_ins_hets, *smpl_del_hets, *smpl_ins_homs, *smpl_del_homs;
+    int *smpl_frm_shifts;   // not-applicable, in-frame, out-frame
+    vaf_t vaf, *smpl_vaf;   // total (INFO/AD) and per-sample (FMT/VAF) VAF distributions
     unsigned long int *smpl_dp;
     idist_t dp, dp_sites;
     int nusr;
     user_stats_t *usr;
+    double *dvaf;   // distribution of the mean indel-allele frequency by length: -m_indel,-(m_indel-1),...-1,0,1,..,m_indel
+    uint32_t *nvaf;
 }
 stats_t;
 
 typedef struct
 {
-    uint64_t m[3], mm[3];        // number of hom, het and non-ref hom matches and mismatches
-    float r2sum;
-    uint32_t r2n;
+    uint64_t gt2gt[5][5];   // number of RR->RR, RR->RA, etc. matches/mismatches; see type2stats
+    /*
+        Pearson's R^2 is used for aggregate R^2
+        y, yy .. sum of dosage and squared dosage in the query VCF (second file)
+        x, xx .. sum of squared dosage in the truth VCF (first file)
+        n     .. number of genotypes
+     */
+    double y, yy, x, xx, yx, n;
 }
 gtcmp_t;
 
@@ -137,7 +148,13 @@ typedef struct
     int *tmp_iaf, ntmp_iaf, m_af, m_qual, naf_hwe, mtmp_frm;
     uint8_t *tmp_frm;
     int dp_min, dp_max, dp_step;
-    gtcmp_t *af_gts_snps, *af_gts_indels, *smpl_gts_snps, *smpl_gts_indels; // first bin of af_* stats are singletons
+    gtcmp_t *smpl_gts_snps, *smpl_gts_indels;
+    gtcmp_t *af_gts_snps, *af_gts_indels; // first bin of af_* stats are singletons
+    bin_t *af_bins;
+    float *farr;
+    int32_t *iarr;
+    int mfarr, miarr;
+    int nref_tot, nhet_tot, nalt_tot, n_nref, i_nref;
 
     // indel context
     indel_ctx_t *indel_ctx;
@@ -150,21 +167,18 @@ typedef struct
     // other
     bcf_srs_t *files;
     bcf_sr_regions_t *exons;
-    char **argv, *exons_fname, *regions_list, *samples_list, *targets_list;
+    char **argv, *exons_fname, *regions_list, *samples_list, *targets_list, *af_bins_list, *af_tag;
     int argc, verbose_sites, first_allele_only, samples_is_file;
     int split_by_id, nstats;
 
     filter_t *filter[2];
     char *filter_str;
     int filter_logic;   // include or exclude sites which match the filters? One of FLT_INCLUDE/FLT_EXCLUDE
-
-    // Per Sample r working data arrays of size equal to number of samples
-    smpl_r_t* smpl_r_snps;
-    smpl_r_t* smpl_r_indels;
+    int n_threads;
 }
 args_t;
 
-static int type2dosage[6], type2ploidy[6], type2stats[6];
+static int type2dosage[6], type2ploidy[6], type2stats[7];
 
 static void idist_init(idist_t *d, int min, int max, int step)
 {
@@ -189,23 +203,22 @@ static inline int idist_i2bin(idist_t *d, int i)
     return i-1+d->min;
 }
 
-
 #define IC_DBG 0
 #if IC_DBG
 static void _indel_ctx_print1(_idc1_t *idc)
 {
     int i;
-    fprintf(pysam_stdout, "%d\t", idc->cnt);
+    fprintf(bcftools_stdout, "%d\t", idc->cnt);
     for (i=0; i<idc->len; i++)
-        fputc(idc->seq[i], pysam_stdout);
-    fputc('\n', pysam_stdout);
+        fputc(idc->seq[i], bcftools_stdout);
+    fputc('\n', bcftools_stdout);
 }
 static void _indel_ctx_print(indel_ctx_t *ctx)
 {
     int i;
     for (i=0; i<ctx->ndat; i++)
         _indel_ctx_print1(&ctx->dat[i]);
-    fputc('\n',pysam_stdout);
+    fputc('\n',bcftools_stdout);
 }
 #endif
 static int _indel_ctx_lookup(indel_ctx_t *ctx, char *seq, int seq_len, int *hit)
@@ -299,12 +312,18 @@ int indel_ctx_type(indel_ctx_t *ctx, char *chr, int pos, char *ref, char *alt, i
 
     int i, fai_ref_len;
     char *fai_ref = faidx_fetch_seq(ctx->ref, chr, pos-1, pos+win_size, &fai_ref_len);
+    if ( !fai_ref )
+    {
+        *nrep = 0;
+        *nlen = 0;
+        return alt_len - ref_len;
+    }
     for (i=0; i<fai_ref_len; i++)
         if ( (int)fai_ref[i]>96 ) fai_ref[i] -= 32;
 
     // Sanity check: the reference sequence must match the REF allele
     for (i=0; i<fai_ref_len && i<ref_len; i++)
-        if ( ref[i] != fai_ref[i] && ref[i] - 32 != fai_ref[i] )
+        if ( ref[i] != fai_ref[i] && ref[i] - 32 != fai_ref[i] && !iupac_consistent(fai_ref[i], ref[i]) )
             error("\nSanity check failed, the reference sequence differs: %s:%d+%d .. %c vs %c\n", chr, pos, i, ref[i],fai_ref[i]);
 
     // Count occurrences of all possible kmers
@@ -317,9 +336,9 @@ int indel_ctx_type(indel_ctx_t *ctx, char *chr, int pos, char *ref, char *alt, i
     }
 
     #if IC_DBG
-    fprintf(pysam_stdout,"ref: %s\n", ref);
-    fprintf(pysam_stdout,"alt: %s\n", alt);
-    fprintf(pysam_stdout,"ctx: %s\n", fai_ref);
+    fprintf(bcftools_stdout,"ref: %s\n", ref);
+    fprintf(bcftools_stdout,"alt: %s\n", alt);
+    fprintf(bcftools_stdout,"ctx: %s\n", fai_ref);
     _indel_ctx_print(ctx);
     #endif
 
@@ -346,12 +365,29 @@ static void add_user_stats(args_t *args, char *str)
     args->usr = (user_stats_t*) realloc(args->usr,sizeof(user_stats_t)*args->nusr);
     user_stats_t *usr = &args->usr[args->nusr-1];
     memset(usr,0,sizeof(*usr));
-    usr->min  = 0;
-    usr->max  = 1;
+    usr->min   = 0;
+    usr->max   = 1;
     usr->nbins = 100;
+    usr->idx   = 0;
 
     char *tmp = str;
     while ( *tmp && *tmp!=':' ) tmp++;
+
+    // Tag with an index or just tag? (e.g. PV4[1] vs DP)
+    if ( tmp > str && tmp[-1]==']' )
+    {
+        char *ptr = tmp;
+        while ( ptr>str && *ptr!='[' ) ptr--;
+        if ( *ptr=='[' )
+        {
+            char *ptr2;
+            usr->idx = strtol(ptr+1, &ptr2, 10);
+            if ( ptr+1==ptr2 || ptr2 != tmp-1 ) error("Could not parse the index in \"%s\" (ptr=%s;ptr2=%s(%p),tmp=%s(%p),idx=%d)\n", str,ptr,ptr2,ptr2,tmp,tmp,usr->idx);
+            if ( usr->idx<0 ) error("Error: negative index is not allowed: \"%s\"\n", str);
+            *ptr = 0;
+        }
+    }
+
     usr->tag = (char*)calloc(tmp-str+2,sizeof(char));
     memcpy(usr->tag,str,tmp-str);
 
@@ -381,7 +417,8 @@ static void init_user_stats(args_t *args, bcf_hdr_t *hdr, stats_t *stats)
 {
     stats->nusr = args->nusr;
     stats->usr = (user_stats_t*)malloc(sizeof(user_stats_t)*args->nusr);
-    memcpy(stats->usr,args->usr,args->nusr*sizeof(user_stats_t));
+    if (args->nusr)
+        memcpy(stats->usr,args->usr,args->nusr*sizeof(user_stats_t));
     int i;
     for (i=0; i<stats->nusr; i++)
     {
@@ -391,7 +428,7 @@ static void init_user_stats(args_t *args, bcf_hdr_t *hdr, stats_t *stats)
         int id = bcf_hdr_id2int(hdr,BCF_DT_ID,usr->tag);
         if ( !bcf_hdr_idinfo_exists(hdr,BCF_HL_INFO,id) ) error("The INFO tag \"%s\" is not defined in the header\n", usr->tag);
         usr->type = bcf_hdr_id2type(hdr,BCF_HL_INFO,id);
-        if ( usr->type!=BCF_HT_REAL && usr->type!=BCF_HT_INT ) error("The INFO tag \"%s\" is not of Float or Integer type (%d)\n", usr->type);
+        if ( usr->type!=BCF_HT_REAL && usr->type!=BCF_HT_INT ) error("The INFO tag \"%s\" is not of Float or Integer type (%d)\n", usr->tag, usr->type);
     }
 }
 static void init_stats(args_t *args)
@@ -405,13 +442,32 @@ static void init_stats(args_t *args)
         args->filter[0] = filter_init(bcf_sr_get_header(args->files,0), args->filter_str);
         if ( args->files->nreaders==2 )
             args->filter[1] = filter_init(bcf_sr_get_header(args->files,1), args->filter_str);
+        args->files->max_unpack |= filter_max_unpack(args->filter[0]);
     }
 
-    // AF corresponds to AC but is more robust for mixture of haploid and diploid GTs
-    args->m_af = 101;
-    for (i=0; i<args->files->nreaders; i++)
-        if ( bcf_hdr_nsamples(args->files->readers[i].header) + 1> args->m_af )
-            args->m_af = bcf_hdr_nsamples(args->files->readers[i].header) + 1;
+    // AF corresponds to AC but is more robust to mixtures of haploid and diploid GTs
+    if ( !args->af_bins_list )
+    {
+        args->m_af = 101;
+        for (i=0; i<args->files->nreaders; i++)
+            if ( bcf_hdr_nsamples(args->files->readers[i].header) + 1> args->m_af )
+                args->m_af = bcf_hdr_nsamples(args->files->readers[i].header) + 1;
+    }
+    else
+    {
+        args->af_bins = bin_init(args->af_bins_list,0,1);
+
+        // m_af is used also for other af arrays, where the first bin is for
+        // singletons. However, since the last element is unused in af_bins
+        // (n boundaries form n-1 intervals), the m_af count is good for both.
+        args->m_af = bin_get_size(args->af_bins);
+    }
+
+    bcf_hdr_t *hdr = bcf_sr_get_header(args->files,0);
+    if ( args->af_tag && !bcf_hdr_idinfo_exists(hdr,BCF_HL_INFO,bcf_hdr_id2int(hdr,BCF_DT_ID,args->af_tag)) )
+        error("No such INFO tag: %s\n", args->af_tag);
+
+    int id, has_fmt_ad = ((id=bcf_hdr_id2int(hdr,BCF_DT_ID,"AD"))>=0 && bcf_hdr_idinfo_exists(hdr,BCF_HL_FMT,id)) ? 1 : 0;
 
     #if QUAL_STATS
         args->m_qual = 999;
@@ -432,8 +488,6 @@ static void init_stats(args_t *args)
         args->af_gts_indels   = (gtcmp_t *) calloc(args->m_af,sizeof(gtcmp_t));
         args->smpl_gts_snps   = (gtcmp_t *) calloc(args->files->n_smpl,sizeof(gtcmp_t));
         args->smpl_gts_indels = (gtcmp_t *) calloc(args->files->n_smpl,sizeof(gtcmp_t));
-        args->smpl_r_snps = (smpl_r_t*) calloc(args->files->n_smpl, sizeof(smpl_r_t));
-        args->smpl_r_indels = (smpl_r_t*) calloc(args->files->n_smpl, sizeof(smpl_r_t));
     }
     for (i=0; i<args->nstats; i++)
     {
@@ -447,29 +501,37 @@ static void init_stats(args_t *args)
         int j;
         for (j=0; j<3; j++) stats->af_repeats[j] = (int*) calloc(args->m_af,sizeof(int));
         #if QUAL_STATS
-            stats->qual_ts     = (int*) calloc(args->m_qual,sizeof(int));
-            stats->qual_tv     = (int*) calloc(args->m_qual,sizeof(int));
-            stats->qual_snps   = (int*) calloc(args->m_qual,sizeof(int));
-            stats->qual_indels = (int*) calloc(args->m_qual,sizeof(int));
+            stats->qual_ts     = dist_init(5);
+            stats->qual_tv     = dist_init(5);
+            stats->qual_indels = dist_init(5);
         #endif
         if ( args->files->n_smpl )
         {
+            stats->smpl_missing = (int *) calloc(args->files->n_smpl,sizeof(int));
             stats->smpl_hets   = (int *) calloc(args->files->n_smpl,sizeof(int));
             stats->smpl_homAA  = (int *) calloc(args->files->n_smpl,sizeof(int));
             stats->smpl_homRR  = (int *) calloc(args->files->n_smpl,sizeof(int));
-            stats->smpl_indel_hets = (int *) calloc(args->files->n_smpl,sizeof(int));
-            stats->smpl_indel_homs = (int *) calloc(args->files->n_smpl,sizeof(int));
+            stats->smpl_hapRef = (int *) calloc(args->files->n_smpl,sizeof(int));
+            stats->smpl_hapAlt = (int *) calloc(args->files->n_smpl,sizeof(int));
+            stats->smpl_ins_hets = (int *) calloc(args->files->n_smpl,sizeof(int));
+            stats->smpl_del_hets = (int *) calloc(args->files->n_smpl,sizeof(int));
+            stats->smpl_ins_homs = (int *) calloc(args->files->n_smpl,sizeof(int));
+            stats->smpl_del_homs = (int *) calloc(args->files->n_smpl,sizeof(int));
             stats->smpl_ts     = (int *) calloc(args->files->n_smpl,sizeof(int));
             stats->smpl_tv     = (int *) calloc(args->files->n_smpl,sizeof(int));
             stats->smpl_indels = (int *) calloc(args->files->n_smpl,sizeof(int));
             stats->smpl_dp     = (unsigned long int *) calloc(args->files->n_smpl,sizeof(unsigned long int));
             stats->smpl_ndp    = (int *) calloc(args->files->n_smpl,sizeof(int));
             stats->smpl_sngl   = (int *) calloc(args->files->n_smpl,sizeof(int));
+            if ( has_fmt_ad )
+                stats->smpl_vaf = (vaf_t*) calloc(args->files->n_smpl,sizeof(vaf_t));
             #if HWE_STATS
                 stats->af_hwe  = (int*) calloc(args->m_af*args->naf_hwe,sizeof(int));
             #endif
             if ( args->exons_fname )
                 stats->smpl_frm_shifts = (int*) calloc(args->files->n_smpl*3,sizeof(int));
+            stats->nvaf = (uint32_t*) calloc(stats->m_indel*2+1,sizeof(*stats->nvaf));
+            stats->dvaf = (double*) calloc(stats->m_indel*2+1,sizeof(*stats->dvaf));
         }
         idist_init(&stats->dp, args->dp_min,args->dp_max,args->dp_step);
         idist_init(&stats->dp_sites, args->dp_min,args->dp_max,args->dp_step);
@@ -505,9 +567,10 @@ static void init_stats(args_t *args)
     type2stats[GT_HOM_RR] = 0;
     type2stats[GT_HET_RA] = 1;
     type2stats[GT_HOM_AA] = 2;
-    type2stats[GT_HET_AA] = 1;
+    type2stats[GT_HET_AA] = 3;
     type2stats[GT_HAPL_R] = 0;
     type2stats[GT_HAPL_A] = 2;
+    type2stats[GT_UNKN]   = 4;
 
 }
 static void destroy_stats(args_t *args)
@@ -522,28 +585,32 @@ static void destroy_stats(args_t *args)
         for (j=0; j<3; j++)
             if (stats->af_repeats[j]) free(stats->af_repeats[j]);
         #if QUAL_STATS
-            if (stats->qual_ts) free(stats->qual_ts);
-            if (stats->qual_tv) free(stats->qual_tv);
-            if (stats->qual_snps) free(stats->qual_snps);
-            if (stats->qual_indels) free(stats->qual_indels);
+            if (stats->qual_ts) dist_destroy(stats->qual_ts);
+            if (stats->qual_tv) dist_destroy(stats->qual_tv);
+            if (stats->qual_indels) dist_destroy(stats->qual_indels);
         #endif
         #if HWE_STATS
-            //if ( args->files->n_smpl ) free(stats->af_hwe);
             free(stats->af_hwe);
         #endif
         free(stats->insertions);
         free(stats->deletions);
-        if (stats->smpl_hets) free(stats->smpl_hets);
-        if (stats->smpl_homAA) free(stats->smpl_homAA);
-        if (stats->smpl_homRR) free(stats->smpl_homRR);
-        if (stats->smpl_indel_homs) free(stats->smpl_indel_homs);
-        if (stats->smpl_indel_hets) free(stats->smpl_indel_hets);
-        if (stats->smpl_ts) free(stats->smpl_ts);
-        if (stats->smpl_tv) free(stats->smpl_tv);
-        if (stats->smpl_indels) free(stats->smpl_indels);
-        if (stats->smpl_dp) free(stats->smpl_dp);
-        if (stats->smpl_ndp) free(stats->smpl_ndp);
-        if (stats->smpl_sngl) free(stats->smpl_sngl);
+        free(stats->smpl_missing);
+        free(stats->smpl_hets);
+        free(stats->smpl_homAA);
+        free(stats->smpl_homRR);
+        free(stats->smpl_hapRef);
+        free(stats->smpl_hapAlt);
+        free(stats->smpl_ins_homs);
+        free(stats->smpl_del_homs);
+        free(stats->smpl_ins_hets);
+        free(stats->smpl_del_hets);
+        free(stats->smpl_ts);
+        free(stats->smpl_tv);
+        free(stats->smpl_indels);
+        free(stats->smpl_dp);
+        free(stats->smpl_ndp);
+        free(stats->smpl_sngl);
+        free(stats->smpl_vaf);
         idist_destroy(&stats->dp);
         idist_destroy(&stats->dp_sites);
         for (j=0; j<stats->nusr; j++)
@@ -554,8 +621,13 @@ static void destroy_stats(args_t *args)
         }
         free(stats->usr);
         if ( args->exons ) free(stats->smpl_frm_shifts);
+        free(stats->nvaf);
+        free(stats->dvaf);
     }
     for (j=0; j<args->nusr; j++) free(args->usr[j].tag);
+    if ( args->af_bins ) bin_destroy(args->af_bins);
+    free(args->farr);
+    free(args->iarr);
     free(args->usr);
     free(args->tmp_frm);
     free(args->tmp_iaf);
@@ -564,46 +636,69 @@ static void destroy_stats(args_t *args)
     free(args->af_gts_indels);
     free(args->smpl_gts_snps);
     free(args->smpl_gts_indels);
-    free(args->smpl_r_snps);
-    free(args->smpl_r_indels);
     if (args->indel_ctx) indel_ctx_destroy(args->indel_ctx);
     if (args->filter[0]) filter_destroy(args->filter[0]);
     if (args->filter[1]) filter_destroy(args->filter[1]);
 }
 
+// The arary tmp_iaf keeps the index of AF bin for each allele, the first bin is for singletons.
+// The number of bins, either m_af (101) or as given by the user in --af-bins
 static void init_iaf(args_t *args, bcf_sr_t *reader)
 {
     bcf1_t *line = reader->buffer[0];
-    if ( args->ntmp_iaf < line->n_allele )
-    {
-        args->tmp_iaf = (int*)realloc(args->tmp_iaf, line->n_allele*sizeof(int));
-        args->ntmp_iaf = line->n_allele;
-    }
-    // tmp_iaf is first filled with AC counts in calc_ac and then transformed to
-    //  an index to af_gts_snps
-    int i, ret = bcf_calc_ac(reader->header, line, args->tmp_iaf, args->samples_list ? BCF_UN_INFO|BCF_UN_FMT : BCF_UN_INFO);
-    if ( ret )
-    {
-        int an=0;
-        for (i=0; i<line->n_allele; i++)
-            an += args->tmp_iaf[i];
+    hts_expand(int32_t,line->n_allele,args->ntmp_iaf,args->tmp_iaf);
 
+    int i, ret;
+    if ( args->af_tag )
+    {
+        ret = bcf_get_info_float(reader->header, line, args->af_tag, &args->farr, &args->mfarr);
+        if ( ret<=0 || ret!=line->n_allele-1 )
+        {
+            // the AF tag is not present or wrong number of values, put in the singletons/unknown bin
+            for (i=0; i<line->n_allele; i++) args->tmp_iaf[i] = 0;
+            return;
+        }
         args->tmp_iaf[0] = 0;
         for (i=1; i<line->n_allele; i++)
         {
-            if ( args->tmp_iaf[i]==1 )
-                args->tmp_iaf[i] = 0; // singletons into the first bin
-            else if ( !an )
-                args->tmp_iaf[i] = 1;   // no genotype at all, put to the AF=0 bin
-            else
-                args->tmp_iaf[i] = 1 + args->tmp_iaf[i] * (args->m_af-2.0) / an;
+            float af = args->farr[i-1];
+            if ( af<0 ) af = 0;
+            else if ( af>1 ) af = 1;
+            int iaf = args->af_bins ? bin_get_idx(args->af_bins,af) : af*(args->m_af-2);
+            args->tmp_iaf[i] = iaf + 1;     // the first tmp_iaf bin is reserved for singletons
+        }
+        return;
+    }
+
+    // tmp_iaf is first filled with AC counts in calc_ac and then transformed to
+    //  an index to af_gts_snps
+    ret = bcf_calc_ac(reader->header, line, args->tmp_iaf, args->samples_list ? BCF_UN_INFO|BCF_UN_FMT : BCF_UN_INFO);
+    if ( !ret )
+    {
+        for (i=0; i<line->n_allele; i++) args->tmp_iaf[i] = 0;      // singletons/unknown bin
+        return;
+    }
+
+    int an = 0;
+    for (i=0; i<line->n_allele; i++)
+        an += args->tmp_iaf[i];
+
+    args->tmp_iaf[0] = 0;
+    for (i=1; i<line->n_allele; i++)
+    {
+        if ( args->tmp_iaf[i]==1 )
+            args->tmp_iaf[i] = 0;   // singletons into the first bin
+        else if ( !an )
+            args->tmp_iaf[i] = 1;   // no genotype at all, put to the AF=0 bin
+        else
+        {
+            float af = (float) args->tmp_iaf[i] / an;
+            if ( af<0 ) af = 0;
+            else if ( af>1 ) af = 1;
+            int iaf = args->af_bins ? bin_get_idx(args->af_bins,af) : af*(args->m_af-2);
+            args->tmp_iaf[i] = iaf + 1;
         }
     }
-    else
-        for (i=0; i<line->n_allele; i++)
-            args->tmp_iaf[i] = 0;
-
-    // todo: otherwise use AF
 }
 
 static inline void do_mnp_stats(args_t *args, stats_t *stats, bcf_sr_t *reader)
@@ -623,8 +718,8 @@ static void do_indel_stats(args_t *args, stats_t *stats, bcf_sr_t *reader)
     bcf1_t *line = reader->buffer[0];
 
     #if QUAL_STATS
-        int iqual = line->qual >= args->m_qual || isnan(line->qual) ? args->m_qual - 1 : line->qual;
-        stats->qual_indels[iqual]++;
+        int iqual = (isnan(line->qual) || line->qual<0) ? 0 : 1 + (int)(line->qual*10);
+        dist_insert(stats->qual_indels, iqual);
     #endif
 
     // Check if the indel is near an exon for the frameshift statistics
@@ -639,8 +734,10 @@ static void do_indel_stats(args_t *args, stats_t *stats, bcf_sr_t *reader)
     for (i=1; i<line->n_allele; i++)
     {
         if ( args->first_allele_only && i>1 ) break;
-        if ( bcf_get_variant_type(line,i)!=VCF_INDEL ) continue;
-        int len = line->d.var[i].n;
+        int is_indel = bcf_has_variant_type(line,i,VCF_INDEL);
+        if (is_indel < 0) error("bcf_has_variant_type() failed.");
+        if ( !is_indel ) continue;
+        int len = bcf_variant_length(line, i);
 
         #if IRC_STATS
         // Indel repeat consistency
@@ -725,7 +822,7 @@ static void do_indel_stats(args_t *args, stats_t *stats, bcf_sr_t *reader)
 
 static void do_user_stats(stats_t *stats, bcf_sr_t *reader, int is_ts)
 {
-    int i;
+    int i, nval;
     for (i=0; i<stats->nusr; i++)
     {
         user_stats_t *usr = &stats->usr[i];
@@ -733,13 +830,15 @@ static void do_user_stats(stats_t *stats, bcf_sr_t *reader, int is_ts)
         float val;
         if ( usr->type==BCF_HT_REAL )
         {
-            if ( bcf_get_info_float(reader->header,reader->buffer[0],usr->tag,&usr->val,&usr->m_val)<=0 ) continue;
-            val = ((float*)usr->val)[0];
+            if ( (nval=bcf_get_info_float(reader->header,reader->buffer[0],usr->tag,&usr->val,&usr->m_val))<=0 ) continue;
+            if ( usr->idx >= nval ) continue;
+            val = ((float*)usr->val)[usr->idx];
         }
         else
         {
-            if ( bcf_get_info_int32(reader->header,reader->buffer[0],usr->tag,&usr->val,&usr->m_val)<=0 ) continue;
-            val = ((int32_t*)usr->val)[0];
+            if ( (nval=bcf_get_info_int32(reader->header,reader->buffer[0],usr->tag,&usr->val,&usr->m_val))<=0 ) continue;
+            if ( usr->idx >= nval ) continue;
+            val = ((int32_t*)usr->val)[usr->idx];
         }
         int idx;
         if ( val<=usr->min ) idx = 0;
@@ -758,8 +857,7 @@ static void do_snp_stats(args_t *args, stats_t *stats, bcf_sr_t *reader)
     if ( ref<0 ) return;
 
     #if QUAL_STATS
-        int iqual = line->qual >= args->m_qual || isnan(line->qual) ? args->m_qual - 1 : line->qual;
-        stats->qual_snps[iqual]++;
+        int iqual = (isnan(line->qual) || line->qual<0) ? 0 : 1 + (int)(line->qual*10);
     #endif
 
     int i;
@@ -778,7 +876,7 @@ static void do_snp_stats(args_t *args, stats_t *stats, bcf_sr_t *reader)
             {
                 stats->ts_alt1++;
                 #if QUAL_STATS
-                    stats->qual_ts[iqual]++;
+                    dist_insert(stats->qual_ts,iqual);
                 #endif
                 do_user_stats(stats, reader, 1);
             }
@@ -790,7 +888,7 @@ static void do_snp_stats(args_t *args, stats_t *stats, bcf_sr_t *reader)
             {
                 stats->tv_alt1++;
                 #if QUAL_STATS
-                    stats->qual_tv[iqual]++;
+                    dist_insert(stats->qual_tv,iqual);
                 #endif
                 do_user_stats(stats, reader, 0);
             }
@@ -799,111 +897,286 @@ static void do_snp_stats(args_t *args, stats_t *stats, bcf_sr_t *reader)
     }
 }
 
+// Returns the max non-ref AD value
+static inline int get_ad(bcf1_t *line, bcf_fmt_t *ad_fmt_ptr, int ismpl, int *ial)
+{
+    int iv, ad = 0;
+    *ial = 0;
+    #define BRANCH_INT(type_t,convert,missing,vector_end) { \
+        uint8_t *x = ad_fmt_ptr->p + ad_fmt_ptr->size*ismpl; \
+        for (iv=1; iv<ad_fmt_ptr->n && iv<line->n_allele; iv++) \
+        { \
+            type_t val = convert(&x[iv * sizeof(type_t)]); \
+            if ( val==vector_end ) break; \
+            if ( val==missing ) continue; \
+            if ( ad < val ) { ad = val; *ial = iv; }\
+        } \
+    }
+    switch (ad_fmt_ptr->type) {
+        case BCF_BT_INT8:  BRANCH_INT(int8_t,  le_to_i8,  bcf_int8_missing, bcf_int8_vector_end); break;
+        case BCF_BT_INT16: BRANCH_INT(int16_t, le_to_i16, bcf_int16_missing, bcf_int16_vector_end); break;
+        case BCF_BT_INT32: BRANCH_INT(int32_t, le_to_i32, bcf_int32_missing, bcf_int32_vector_end); break;
+        default: fprintf(bcftools_stderr, "[E::%s] todo: %d\n", __func__, ad_fmt_ptr->type); bcftools_exit(1); break;
+    }
+    #undef BRANCH_INT
+    return ad;
+}
+static inline int get_iad(bcf1_t *line, bcf_fmt_t *ad_fmt_ptr, int ismpl, int ial)
+{
+    #define BRANCH_INT(type_t,convert,missing,vector_end) { \
+        type_t val = convert(ad_fmt_ptr->p + ad_fmt_ptr->size*ismpl + ial*sizeof(type_t)); \
+        if ( val==vector_end ) return 0; \
+        if ( val==missing ) return 0; \
+        return val; \
+    }
+    switch (ad_fmt_ptr->type) {
+        case BCF_BT_INT8:  BRANCH_INT(int8_t,  le_to_i8,  bcf_int8_missing, bcf_int8_vector_end); break;
+        case BCF_BT_INT16: BRANCH_INT(int16_t, le_to_i16, bcf_int16_missing, bcf_int16_vector_end); break;
+        case BCF_BT_INT32: BRANCH_INT(int32_t, le_to_i32, bcf_int32_missing, bcf_int32_vector_end); break;
+        default: fprintf(bcftools_stderr, "[E::%s] todo: %d\n", __func__, ad_fmt_ptr->type); bcftools_exit(1); break;
+    }
+    #undef BRANCH_INT
+}
+static inline void update_dvaf(stats_t *stats, bcf1_t *line, int ial, float vaf)
+{
+    int len = line->d.var[ial].n;
+    if ( len < -stats->m_indel ) len = -stats->m_indel;
+    else if ( len > stats->m_indel ) len = stats->m_indel;
+    int bin = stats->m_indel + len;
+    stats->nvaf[bin]++;
+    stats->dvaf[bin] += vaf;
+}
+#define vaf2bin(vaf) ((int)nearbyintf((vaf)/0.05))
+static inline void update_vaf(vaf_t *smpl_vaf, bcf1_t *line, int ial, float vaf)
+{
+    if ( vaf>=0 && vaf<=1 )
+    {
+        int idx = vaf2bin(vaf);
+        if ( bcf_get_variant_type(line,ial)==VCF_SNP ) smpl_vaf->snv[idx]++;
+        else smpl_vaf->indel[idx]++;
+    }
+}
+
+static inline int calc_sample_depth(args_t *args, int ismpl, bcf_fmt_t *ad_fmt_ptr, bcf_fmt_t *dp_fmt_ptr)
+{
+    if ( dp_fmt_ptr )
+    {
+        #define BRANCH_INT(type_t,convert,missing,vector_end) { \
+            type_t val = convert(dp_fmt_ptr->p + dp_fmt_ptr->size*ismpl); \
+            if ( val==missing || val==vector_end ) return -1; \
+            return val; \
+        }
+        switch (dp_fmt_ptr->type) {
+            case BCF_BT_INT8:  BRANCH_INT(int8_t,  le_to_i8,  bcf_int8_missing, bcf_int8_vector_end); break;
+            case BCF_BT_INT16: BRANCH_INT(int16_t, le_to_i16, bcf_int16_missing, bcf_int16_vector_end); break;
+            case BCF_BT_INT32: BRANCH_INT(int32_t, le_to_i32, bcf_int32_missing, bcf_int32_vector_end); break;
+            default: fprintf(bcftools_stderr, "[E::%s] todo: %d\n", __func__, dp_fmt_ptr->type); bcftools_exit(1); break;
+        }
+        #undef BRANCH_INT
+    }
+    if ( ad_fmt_ptr )
+    {
+        int iv, dp = 0, has_value = 0;
+        #define BRANCH_INT(type_t,convert,missing,vector_end) { \
+            uint8_t *x = ad_fmt_ptr->p + ad_fmt_ptr->size*ismpl; \
+            for (iv=0; iv<ad_fmt_ptr->n; iv++) \
+            { \
+                type_t val = convert(&x[iv * sizeof(type_t)]); \
+                if ( val==vector_end ) break; \
+                if ( val==missing ) continue; \
+                has_value = 1; \
+                dp += val; \
+            } \
+        }
+        switch (ad_fmt_ptr->type) {
+            case BCF_BT_INT8:  BRANCH_INT(int8_t,  le_to_i8,  bcf_int8_missing, bcf_int8_vector_end); break;
+            case BCF_BT_INT16: BRANCH_INT(int16_t, le_to_i16, bcf_int16_missing, bcf_int16_vector_end); break;
+            case BCF_BT_INT32: BRANCH_INT(int32_t, le_to_i32, bcf_int32_missing, bcf_int32_vector_end); break;
+            default: fprintf(bcftools_stderr, "[E::%s] todo: %d\n", __func__, ad_fmt_ptr->type); bcftools_exit(1); break;
+        }
+        #undef BRANCH_INT
+        if ( !has_value ) return -1;
+        return dp;
+    }
+    return -1;
+}
+static inline void sample_gt_stats(args_t *args, stats_t *stats, bcf1_t *line, int ismpl, int gt, int ial, int jal)
+{
+    if ( gt==GT_UNKN )
+    {
+        stats->smpl_missing[ismpl]++;
+        return;
+    }
+
+    int var_type = 0;
+    if ( ial>0 ) var_type |= bcf_get_variant_type(line,ial);
+    if ( jal>0 ) var_type |= bcf_get_variant_type(line,jal);
+    if ( gt==GT_HAPL_R || gt==GT_HAPL_A )
+    {
+        if ( var_type&VCF_INDEL && stats->smpl_frm_shifts )
+        {
+            assert( ial<line->n_allele );
+            stats->smpl_frm_shifts[ismpl*3 + args->tmp_frm[ial]]++;
+        }
+        if ( gt == GT_HAPL_R ) stats->smpl_hapRef[ismpl]++;
+        if ( gt == GT_HAPL_A ) stats->smpl_hapAlt[ismpl]++;
+        return;
+    }
+    if ( gt != GT_HOM_RR ) { args->n_nref++; args->i_nref = ismpl; }
+    #if HWE_STATS
+        switch (gt)
+        {
+            case GT_HOM_RR: args->nref_tot++; break;
+            case GT_HET_RA: args->nhet_tot++; break;
+            case GT_HET_AA:
+            case GT_HOM_AA: args->nalt_tot++; break;
+        }
+    #endif
+
+    if ( var_type&VCF_SNP || var_type==VCF_REF )  // count ALT=. as SNP
+    {
+        if ( gt == GT_HET_RA ) stats->smpl_hets[ismpl]++;
+        else if ( gt == GT_HET_AA ) stats->smpl_hets[ismpl]++;
+        else if ( gt == GT_HOM_RR ) stats->smpl_homRR[ismpl]++;
+        else if ( gt == GT_HOM_AA ) stats->smpl_homAA[ismpl]++;
+        if ( gt != GT_HOM_RR && line->d.var[ial].type&VCF_SNP ) // this is safe, bcf_get_variant_types has been already called
+        {
+            int ref = bcf_acgt2int(*line->d.allele[0]);
+            int alt = bcf_acgt2int(*line->d.allele[ial]);
+            if ( alt<0 ) return;
+            if ( abs(ref-alt)==2 )
+                stats->smpl_ts[ismpl]++;
+            else
+                stats->smpl_tv[ismpl]++;
+        }
+        if ( gt != GT_HOM_RR && line->d.var[jal].type&VCF_SNP && ial!=jal )
+        {
+            int ref = bcf_acgt2int(*line->d.allele[0]);
+            int alt = bcf_acgt2int(*line->d.allele[jal]);
+            if ( alt<0 ) return;
+            if ( abs(ref-alt)==2 )
+                stats->smpl_ts[ismpl]++;
+            else
+                stats->smpl_tv[ismpl]++;
+        }
+    }
+    if ( var_type&VCF_INDEL )
+    {
+        if ( gt != GT_HOM_RR )
+        {
+            stats->smpl_indels[ismpl]++;
+            if ( gt==GT_HET_RA || gt==GT_HET_AA )
+            {
+                int is_ins = 0, is_del = 0;
+                if ( bcf_get_variant_type(line,ial)&VCF_INDEL )
+                {
+                    if ( line->d.var[ial].n < 0 ) is_del = 1;
+                    else is_ins = 1;
+                }
+                if ( bcf_get_variant_type(line,jal)&VCF_INDEL )
+                {
+                    if ( line->d.var[jal].n < 0 ) is_del = 1;
+                    else is_ins = 1;
+                }
+                // Note that alt-het genotypes with both ins and del allele are counted twice!!
+                if ( is_del ) stats->smpl_del_hets[ismpl]++;
+                if ( is_ins ) stats->smpl_ins_hets[ismpl]++;
+            }
+            else if ( gt==GT_HOM_AA )
+            {
+                if ( line->d.var[ial].n < 0 ) stats->smpl_del_homs[ismpl]++;
+                else stats->smpl_ins_homs[ismpl]++;
+            }
+        }
+        if ( stats->smpl_frm_shifts )
+        {
+            assert( ial<line->n_allele && jal<line->n_allele );
+            stats->smpl_frm_shifts[ismpl*3 + args->tmp_frm[ial]]++;
+            stats->smpl_frm_shifts[ismpl*3 + args->tmp_frm[jal]]++;
+        }
+    }
+}
 static void do_sample_stats(args_t *args, stats_t *stats, bcf_sr_t *reader, int matched)
 {
     bcf_srs_t *files = args->files;
     bcf1_t *line = reader->buffer[0];
-    bcf_fmt_t *fmt_ptr;
-    int nref_tot = 0, nhet_tot = 0, nalt_tot = 0;
-    int line_type = bcf_get_variant_types(line);
 
-    if ( (fmt_ptr = bcf_get_fmt(reader->header,reader->buffer[0],"GT")) )
+    args->nref_tot = 0;
+    args->nhet_tot = 0;
+    args->nalt_tot = 0;
+    args->n_nref   = 0;
+    args->i_nref   = 0;
+
+    bcf_fmt_t *gt_fmt_ptr = bcf_get_fmt(reader->header,reader->buffer[0],"GT");
+    bcf_fmt_t *ad_fmt_ptr = bcf_get_fmt(reader->header,reader->buffer[0],"AD");
+    bcf_fmt_t *dp_fmt_ptr = bcf_get_fmt(reader->header,reader->buffer[0],"DP");
+
+    int is;
+    for (is=0; is<args->files->n_smpl; is++)
     {
-        int ref = bcf_acgt2int(*line->d.allele[0]);
-        int is, n_nref = 0, i_nref = 0;
-        for (is=0; is<args->files->n_smpl; is++)
+        int ismpl = reader->samples[is];    // VCF column index for this sample after possible reordering
+
+        // Determine depth
+        int dp = calc_sample_depth(args,ismpl,ad_fmt_ptr,dp_fmt_ptr);
+        if ( dp>0 )
         {
-            int ial, jal;
-            int gt = bcf_gt_type(fmt_ptr, reader->samples[is], &ial, &jal);
-            if ( gt==GT_UNKN ) continue;
-            if ( gt==GT_HAPL_R || gt==GT_HAPL_A )
+            (*idist(&stats->dp, dp))++;
+            stats->smpl_ndp[is]++;
+            stats->smpl_dp[is] += dp;
+        }
+
+        // Determine genotype
+        int ial, jal, gt=GT_UNKN;
+        if ( gt_fmt_ptr )
+        {
+            gt = bcf_gt_type(gt_fmt_ptr, ismpl, &ial, &jal);
+            sample_gt_stats(args,stats,line,is,gt,ial,jal);
+        }
+
+        // Determine variant allele frequency
+        if ( dp>0 && ad_fmt_ptr )
+        {
+            float iad = 0, jad = 0;
+            if ( gt==GT_UNKN )    // GT not available
             {
-                if ( line_type&VCF_INDEL && stats->smpl_frm_shifts )
-                {
-                    assert( ial<line->n_allele );
-                    stats->smpl_frm_shifts[is*3 + args->tmp_frm[ial]]++;
-                }
-                continue;
+                iad = get_ad(line,ad_fmt_ptr,ismpl,&ial);
             }
-            if ( gt != GT_HOM_RR ) { n_nref++; i_nref = is; }
-            #if HWE_STATS
-                switch (gt)
-                {
-                    case GT_HOM_RR: nref_tot++; break;
-                    case GT_HET_RA: nhet_tot++; break;
-                    case GT_HET_AA:
-                    case GT_HOM_AA: nalt_tot++; break;
-                }
-            #endif
-            if ( line_type&VCF_SNP || line_type==VCF_REF )  // count ALT=. as SNP
+            else if ( gt!=GT_UNKN )
             {
-                if ( gt == GT_HET_RA ) stats->smpl_hets[is]++;
-                else if ( gt == GT_HET_AA ) stats->smpl_hets[is]++;
-                else if ( gt == GT_HOM_RR ) stats->smpl_homRR[is]++;
-                else if ( gt == GT_HOM_AA ) stats->smpl_homAA[is]++;
-                if ( gt != GT_HOM_RR && line->d.var[ial].type&VCF_SNP ) // this is safe, bcf_get_variant_types has been already called
-                {
-                    int alt = bcf_acgt2int(*line->d.allele[ial]);
-                    if ( alt<0 ) continue;
-                    if ( abs(ref-alt)==2 )
-                        stats->smpl_ts[is]++;
-                    else
-                        stats->smpl_tv[is]++;
-                }
+                iad = ial==0 ? 0 : get_iad(line,ad_fmt_ptr,ismpl,ial);
+                jad = jal==0 ? 0 : get_iad(line,ad_fmt_ptr,ismpl,jal);
             }
-            if ( line_type&VCF_INDEL )
+            if ( iad )
             {
-                if ( gt != GT_HOM_RR )
-                {
-                    stats->smpl_indels[is]++;
-                    if ( gt==GT_HET_RA || gt==GT_HET_AA ) stats->smpl_indel_hets[is]++;
-                    else if ( gt==GT_HOM_AA ) stats->smpl_indel_homs[is]++;
-                }
-                if ( stats->smpl_frm_shifts )
-                {
-                    assert( ial<line->n_allele && jal<line->n_allele );
-                    stats->smpl_frm_shifts[is*3 + args->tmp_frm[ial]]++;
-                    stats->smpl_frm_shifts[is*3 + args->tmp_frm[jal]]++;
-                }
+                update_dvaf(stats,line,ial,(float)iad/dp);
+                update_vaf(&stats->smpl_vaf[is],line,ial,(float)iad/dp);
+            }
+            if ( jad && iad!=jad )
+            {
+                update_dvaf(stats,line,jal,(float)jad/dp);
+                update_vaf(&stats->smpl_vaf[is],line,jal,(float)jad/dp);
             }
         }
-        if ( n_nref==1 ) stats->smpl_sngl[i_nref]++;
     }
+    if ( args->n_nref==1 ) stats->smpl_sngl[args->i_nref]++;
 
-    #if HWE_STATS
-        if ( nhet_tot + nref_tot + nalt_tot )
-        {
-            float het_frac = (float)nhet_tot/(nhet_tot + nref_tot + nalt_tot);
-            int idx = het_frac*(args->naf_hwe - 1);
-            if ( line->n_allele>1 ) idx += args->naf_hwe*args->tmp_iaf[1];
-            stats->af_hwe[idx]++;
-        }
-    #endif
-
-    if ( (fmt_ptr = bcf_get_fmt(reader->header,reader->buffer[0],"DP")) )
+#if HWE_STATS
+    if ( gt_fmt_ptr && line->n_allele > 1 && (args->nref_tot || args->nhet_tot || args->nalt_tot) )
     {
-        #define BRANCH_INT(type_t,missing,vector_end) { \
-            int is; \
-            for (is=0; is<args->files->n_smpl; is++) \
-            { \
-                type_t *p = (type_t *) (fmt_ptr->p + fmt_ptr->size*is); \
-                if ( *p==vector_end ) continue; \
-                if ( *p!=missing ) \
-                { \
-                    (*idist(&stats->dp, *p))++; \
-                    stats->smpl_ndp[is]++; \
-                    stats->smpl_dp[is] += *p; \
-                } \
-            } \
-        }
-        switch (fmt_ptr->type) {
-            case BCF_BT_INT8:  BRANCH_INT(int8_t,  bcf_int8_missing, bcf_int8_vector_end); break;
-            case BCF_BT_INT16: BRANCH_INT(int16_t, bcf_int16_missing, bcf_int16_vector_end); break;
-            case BCF_BT_INT32: BRANCH_INT(int32_t, bcf_int32_missing, bcf_int32_vector_end); break;
-            default: fprintf(pysam_stderr, "[E::%s] todo: %d\n", __func__, fmt_ptr->type); exit(1); break;
-        }
-        #undef BRANCH_INT
+        // Number of heterozygous genotypes observed for any given allele frequency. This is used
+        // by plot-vcfstats to show the observed vs expected number of hets. There the expected number
+        // of hets is calculated from the probability P(het) = 2*AF*(1-AF).
+        // The array af_hwe is organized as follows
+        //      m_af     .. number of allele frequency bins
+        //      naf_hwe  .. the number of het genotype frequency bins
+        //      iallele_freq*naf_hwe + ihet_freq
+        //
+        float het_frac = (float)args->nhet_tot / (args->nref_tot + args->nhet_tot + args->nalt_tot);
+        int ihet_freq = het_frac * (args->naf_hwe - 1);
+        int idx = ihet_freq + args->tmp_iaf[1] * args->naf_hwe;
+        stats->af_hwe[idx]++;
     }
+#endif
 
     if ( matched==3 )
     {
@@ -913,88 +1186,43 @@ static void do_sample_stats(args_t *args, stats_t *stats, bcf_sr_t *reader, int 
         fmt1 = bcf_get_fmt(files->readers[1].header,files->readers[1].buffer[0],"GT"); if ( !fmt1 ) return;
 
         // only the first ALT allele is considered
-        int iaf = line->n_allele>1 ? args->tmp_iaf[1] : 1;
+        if (args->ntmp_iaf <= 1) return; // Do not consider invariate sites
+        int iaf = args->tmp_iaf[1];
         int line_type = bcf_get_variant_types(files->readers[0].buffer[0]);
         gtcmp_t *af_stats = line_type&VCF_SNP ? args->af_gts_snps : args->af_gts_indels;
         gtcmp_t *smpl_stats = line_type&VCF_SNP ? args->smpl_gts_snps : args->smpl_gts_indels;
 
-        //
-        // Calculates r squared
-        // x is mean dosage of x at given site
-        // x2 is mean squared dosage of x at given site
-        // y is mean dosage of x at given site
-        // y2 is mean squared dosage of x at given site
-        // xy is mean dosage of x*y at given site
-        // r2sum += (xy - x*y)^2 / ( (x2 - x^2) * (y2 - y^2) )
-        // r2n is number of sites considered
-        // output as r2sum/r2n for each AF bin
-        int r2n = 0;
-        float x = 0, y = 0, xy = 0, x2 = 0, y2 = 0;
-        // Select smpl_r
-        smpl_r_t *smpl_r = NULL;
-        if (line_type&VCF_SNP)
-        {
-            smpl_r = args->smpl_r_snps;
-        }
-        else if (line_type&VCF_INDEL)
-        {
-            smpl_r = args->smpl_r_indels;
-        }
         for (is=0; is<files->n_smpl; is++)
         {
             // Simplified comparison: only 0/0, 0/1, 1/1 is looked at as the identity of
             //  actual alleles can be enforced by running without the -c option.
             int gt0 = bcf_gt_type(fmt0, files->readers[0].samples[is], NULL, NULL);
-            if ( gt0 == GT_UNKN ) continue;
-
             int gt1 = bcf_gt_type(fmt1, files->readers[1].samples[is], NULL, NULL);
-            if ( gt1 == GT_UNKN ) continue;
 
+            int idx0 = type2stats[gt0];
+            int idx1 = type2stats[gt1];
+            af_stats[iaf].gt2gt[idx0][idx1]++;
+            smpl_stats[is].gt2gt[idx0][idx1]++;
+
+            if ( gt0 == GT_UNKN || gt1 == GT_UNKN ) continue;
             if ( type2ploidy[gt0]*type2ploidy[gt1] == -1 ) continue;   // cannot compare diploid and haploid genotypes
 
-            int dsg0 = type2dosage[gt0];
-            int dsg1 = type2dosage[gt1];
-            x   += dsg0;
-            x2  += dsg0*dsg0;
-            y   += dsg1;
-            y2  += dsg1*dsg1;
-            xy  += dsg0*dsg1;
-            r2n++;
+            float y = type2dosage[gt0];
+            float x = type2dosage[gt1];
 
-            int idx = type2stats[gt0];
-            if ( gt0==gt1 )
-            {
-                af_stats[iaf].m[idx]++;
-                smpl_stats[is].m[idx]++;
-            }
-            else
-            {
-                af_stats[iaf].mm[idx]++;
-                smpl_stats[is].mm[idx]++;
-            }
+            smpl_stats[is].yx += y*x;
+            smpl_stats[is].x  += x;
+            smpl_stats[is].xx += x*x;
+            smpl_stats[is].y  += y;
+            smpl_stats[is].yy += y*y;
+            smpl_stats[is].n  += 1;
 
-            // Now do it across samples
-
-            if (smpl_r) {
-                smpl_r[is].xy += dsg0*dsg1;
-                smpl_r[is].x += dsg0;
-                smpl_r[is].x2 += dsg0*dsg0;
-                smpl_r[is].y += dsg1;
-                smpl_r[is].y2 += dsg1*dsg1;
-                ++(smpl_r[is].n);
-            }
-        }
-
-        if ( r2n )
-        {
-            x /= r2n; y /= r2n; x2 /= r2n; y2 /= r2n; xy /= r2n;
-            float cov  = xy - x*y;
-            float var2 = (x2 - x*x) * (y2 - y*y);
-            if ( var2!=0 )
-            {
-                af_stats[iaf].r2sum += cov*cov/var2;
-                af_stats[iaf].r2n++;
-            }
+            af_stats[iaf].yx += y*x;
+            af_stats[iaf].x  += x;
+            af_stats[iaf].xx += x*x;
+            af_stats[iaf].y  += y;
+            af_stats[iaf].yy += y*y;
+            af_stats[iaf].n  += 1;
         }
 
         if ( args->verbose_sites )
@@ -1010,7 +1238,7 @@ static void do_sample_stats(args_t *args, stats_t *stats, bcf_sr_t *reader, int 
                 {
                     nmm++;
                     bcf_sr_t *reader = &files->readers[0];
-                    fprintf(pysam_stdout, "DBG\t%s\t%d\t%s\t%d\t%d\n",reader->header->id[BCF_DT_CTG][reader->buffer[0]->rid].key,reader->buffer[0]->pos+1,files->samples[is],gt,gt2);
+                    fprintf(bcftools_stdout, "DBG\t%s\t%"PRId64"\t%s\t%d\t%d\n",reader->header->id[BCF_DT_CTG][reader->buffer[0]->rid].key,(int64_t) reader->buffer[0]->pos+1,files->samples[is],gt,gt2);
                 }
                 else
                 {
@@ -1019,7 +1247,7 @@ static void do_sample_stats(args_t *args, stats_t *stats, bcf_sr_t *reader, int 
                 }
             }
             float nrd = nrefm+nmm ? 100.*nmm/(nrefm+nmm) : 0;
-            fprintf(pysam_stdout, "PSD\t%s\t%d\t%d\t%d\t%f\n", reader->header->id[BCF_DT_CTG][reader->buffer[0]->rid].key,reader->buffer[0]->pos+1,nm,nmm,nrd);
+            fprintf(bcftools_stdout, "PSD\t%s\t%"PRId64"\t%d\t%d\t%f\n", reader->header->id[BCF_DT_CTG][reader->buffer[0]->rid].key,(int64_t) reader->buffer[0]->pos+1,nm,nmm,nrd);
         }
     }
 }
@@ -1075,52 +1303,53 @@ static void do_vcf_stats(args_t *args)
         if ( line->n_allele>2 )
         {
             stats->n_mals++;
-            if ( line_type == VCF_SNP ) stats->n_snp_mals++;
+            if ( line_type == VCF_SNP ) stats->n_snp_mals++;    // note: this will be fooled by C>C,T
         }
 
         if ( files->n_smpl )
             do_sample_stats(args, stats, reader, ret);
 
-        if ( bcf_get_info_int32(reader->header,line,"DP",&args->tmp_iaf,&args->ntmp_iaf)==1 )
-            (*idist(&stats->dp_sites, args->tmp_iaf[0]))++;    
+        if ( bcf_get_info_int32(reader->header,line,"DP",&args->iarr,&args->miarr)==1 )
+            (*idist(&stats->dp_sites, args->iarr[0]))++;
     }
+    if ( files->errnum ) error("Error: %s\n", bcf_sr_strerror(files->errnum));
 }
 
 static void print_header(args_t *args)
 {
     int i;
-    fprintf(pysam_stdout, "# This file was produced by bcftools stats (%s+htslib-%s) and can be plotted using plot-vcfstats.\n", bcftools_version(),hts_version());
-    fprintf(pysam_stdout, "# The command line was:\tbcftools %s ", args->argv[0]);
+    fprintf(bcftools_stdout, "# This file was produced by bcftools stats (%s+htslib-%s) and can be plotted using plot-vcfstats.\n", bcftools_version(),hts_version());
+    fprintf(bcftools_stdout, "# The command line was:\tbcftools %s ", args->argv[0]);
     for (i=1; i<args->argc; i++)
-        fprintf(pysam_stdout, " %s",args->argv[i]);
-    fprintf(pysam_stdout, "\n#\n");
+        fprintf(bcftools_stdout, " %s",args->argv[i]);
+    fprintf(bcftools_stdout, "\n#\n");
 
-    fprintf(pysam_stdout, "# Definition of sets:\n# ID\t[2]id\t[3]tab-separated file names\n");
+    fprintf(bcftools_stdout, "# Definition of sets:\n# ID\t[2]id\t[3]tab-separated file names\n");
     if ( args->files->nreaders==1 )
     {
         const char *fname = strcmp("-",args->files->readers[0].fname) ? args->files->readers[0].fname : "<STDIN>";
         if ( args->split_by_id )
         {
-            fprintf(pysam_stdout, "ID\t0\t%s:known (sites with ID different from \".\")\n", fname);
-            fprintf(pysam_stdout, "ID\t1\t%s:novel (sites where ID column is \".\")\n", fname);
+            fprintf(bcftools_stdout, "ID\t0\t%s:known (sites with ID different from \".\")\n", fname);
+            fprintf(bcftools_stdout, "ID\t1\t%s:novel (sites where ID column is \".\")\n", fname);
         }
         else
-            fprintf(pysam_stdout, "ID\t0\t%s\n", fname);
+            fprintf(bcftools_stdout, "ID\t0\t%s\n", fname);
     }
     else
     {
         const char *fname0 = strcmp("-",args->files->readers[0].fname) ? args->files->readers[0].fname : "<STDIN>";
         const char *fname1 = strcmp("-",args->files->readers[1].fname) ? args->files->readers[1].fname : "<STDIN>";
-        fprintf(pysam_stdout, "ID\t0\t%s\n", fname0);
-        fprintf(pysam_stdout, "ID\t1\t%s\n", fname1);
-        fprintf(pysam_stdout, "ID\t2\t%s\t%s\n", fname0,fname1);
+        fprintf(bcftools_stdout, "ID\t0\t%s\n", fname0);
+        fprintf(bcftools_stdout, "ID\t1\t%s\n", fname1);
+        fprintf(bcftools_stdout, "ID\t2\t%s\t%s\n", fname0,fname1);
 
         if ( args->verbose_sites )
         {
-            fprintf(pysam_stdout, 
+            fprintf(bcftools_stdout, 
                     "# Verbose per-site discordance output.\n"
                     "# PSD\t[2]CHROM\t[3]POS\t[4]Number of matches\t[5]Number of mismatches\t[6]NRD\n");
-            fprintf(pysam_stdout, 
+            fprintf(bcftools_stdout, 
                     "# Verbose per-site and per-sample output. Genotype codes: %d:HomRefRef, %d:HomAltAlt, %d:HetAltRef, %d:HetAltAlt, %d:haploidRef, %d:haploidAlt\n"
                     "# DBG\t[2]CHROM\t[3]POS\t[4]Sample\t[5]GT in %s\t[6]GT in %s\n",
                     GT_HOM_RR, GT_HOM_AA, GT_HET_RA, GT_HET_AA, GT_HAPL_R, GT_HAPL_A, fname0,fname1);
@@ -1131,43 +1360,63 @@ static void print_header(args_t *args)
 #define T2S(x) type2stats[x]
 static void print_stats(args_t *args)
 {
-    int i, id;
-    fprintf(pysam_stdout, "# SN, Summary numbers:\n# SN\t[2]id\t[3]key\t[4]value\n");
+    int i, j,k, id;
+    fprintf(bcftools_stdout, "# SN, Summary numbers:\n");
+    fprintf(bcftools_stdout, "#   number of records   .. number of data rows in the VCF\n");
+    fprintf(bcftools_stdout, "#   number of no-ALTs   .. reference-only sites, ALT is either \".\" or identical to REF\n");
+    fprintf(bcftools_stdout, "#   number of SNPs      .. number of rows with a SNP\n");
+    fprintf(bcftools_stdout, "#   number of MNPs      .. number of rows with a MNP, such as CC>TT\n");
+    fprintf(bcftools_stdout, "#   number of indels    .. number of rows with an indel\n");
+    fprintf(bcftools_stdout, "#   number of others    .. number of rows with other type, for example a symbolic allele or\n");
+    fprintf(bcftools_stdout, "#                          a complex substitution, such as ACT>TCGA\n");
+    fprintf(bcftools_stdout, "#   number of multiallelic sites     .. number of rows with multiple alternate alleles\n");
+    fprintf(bcftools_stdout, "#   number of multiallelic SNP sites .. number of rows with multiple alternate alleles, all SNPs\n");
+    fprintf(bcftools_stdout, "# \n");
+    fprintf(bcftools_stdout, "#   Note that rows containing multiple types will be counted multiple times, in each\n");
+    fprintf(bcftools_stdout, "#   counter. For example, a row with a SNP and an indel increments both the SNP and\n");
+    fprintf(bcftools_stdout, "#   the indel counter.\n");
+    fprintf(bcftools_stdout, "# \n");
+    fprintf(bcftools_stdout, "# SN\t[2]id\t[3]key\t[4]value\n");
     for (id=0; id<args->files->nreaders; id++)
-        fprintf(pysam_stdout, "SN\t%d\tnumber of samples:\t%d\n", id, bcf_hdr_nsamples(args->files->readers[id].header));
+        fprintf(bcftools_stdout, "SN\t%d\tnumber of samples:\t%d\n", id, bcf_hdr_nsamples(args->files->readers[id].header));
     for (id=0; id<args->nstats; id++)
     {
         stats_t *stats = &args->stats[id];
-        fprintf(pysam_stdout, "SN\t%d\tnumber of records:\t%d\n", id, stats->n_records);
-        fprintf(pysam_stdout, "SN\t%d\tnumber of no-ALTs:\t%d\n", id, stats->n_noalts);
-        fprintf(pysam_stdout, "SN\t%d\tnumber of SNPs:\t%d\n", id, stats->n_snps);
-        fprintf(pysam_stdout, "SN\t%d\tnumber of MNPs:\t%d\n", id, stats->n_mnps);
-        fprintf(pysam_stdout, "SN\t%d\tnumber of indels:\t%d\n", id, stats->n_indels);
-        fprintf(pysam_stdout, "SN\t%d\tnumber of others:\t%d\n", id, stats->n_others);
-        fprintf(pysam_stdout, "SN\t%d\tnumber of multiallelic sites:\t%d\n", id, stats->n_mals);
-        fprintf(pysam_stdout, "SN\t%d\tnumber of multiallelic SNP sites:\t%d\n", id, stats->n_snp_mals);
+        fprintf(bcftools_stdout, "SN\t%d\tnumber of records:\t%"PRIu64"\n", id, stats->n_records);
+        fprintf(bcftools_stdout, "SN\t%d\tnumber of no-ALTs:\t%"PRIu64"\n", id, stats->n_noalts);
+        fprintf(bcftools_stdout, "SN\t%d\tnumber of SNPs:\t%"PRIu64"\n", id, stats->n_snps);
+        fprintf(bcftools_stdout, "SN\t%d\tnumber of MNPs:\t%"PRIu64"\n", id, stats->n_mnps);
+        fprintf(bcftools_stdout, "SN\t%d\tnumber of indels:\t%"PRIu64"\n", id, stats->n_indels);
+        fprintf(bcftools_stdout, "SN\t%d\tnumber of others:\t%"PRIu64"\n", id, stats->n_others);
+        fprintf(bcftools_stdout, "SN\t%d\tnumber of multiallelic sites:\t%"PRIu64"\n", id, stats->n_mals);
+        fprintf(bcftools_stdout, "SN\t%d\tnumber of multiallelic SNP sites:\t%"PRIu64"\n", id, stats->n_snp_mals);
     }
-    fprintf(pysam_stdout, "# TSTV, transitions/transversions:\n# TSTV\t[2]id\t[3]ts\t[4]tv\t[5]ts/tv\t[6]ts (1st ALT)\t[7]tv (1st ALT)\t[8]ts/tv (1st ALT)\n");
+    fprintf(bcftools_stdout, "# TSTV, transitions/transversions\n"
+           "#   - transitions, see https://en.wikipedia.org/wiki/Transition_(genetics)\n"
+           "#   - transversions, see https://en.wikipedia.org/wiki/Transversion\n");
+    fprintf(bcftools_stdout, "# TSTV\t[2]id\t[3]ts\t[4]tv\t[5]ts/tv\t[6]ts (1st ALT)\t[7]tv (1st ALT)\t[8]ts/tv (1st ALT)\n");
     for (id=0; id<args->nstats; id++)
     {
         stats_t *stats = &args->stats[id];
         int ts=0,tv=0;
         for (i=0; i<args->m_af; i++) { ts += stats->af_ts[i]; tv += stats->af_tv[i];  }
-        fprintf(pysam_stdout, "TSTV\t%d\t%d\t%d\t%.2f\t%d\t%d\t%.2f\n", id,ts,tv,tv?(float)ts/tv:0, stats->ts_alt1,stats->tv_alt1,stats->tv_alt1?(float)stats->ts_alt1/stats->tv_alt1:0);
+        fprintf(bcftools_stdout, "TSTV\t%d\t%d\t%d\t%.2f\t%d\t%d\t%.2f\n", id,ts,tv,tv?(float)ts/tv:0, stats->ts_alt1,stats->tv_alt1,stats->tv_alt1?(float)stats->ts_alt1/stats->tv_alt1:0);
     }
     if ( args->exons_fname )
     {
-        fprintf(pysam_stdout, "# FS, Indel frameshifts:\n# FS\t[2]id\t[3]in-frame\t[4]out-frame\t[5]not applicable\t[6]out/(in+out) ratio\t[7]in-frame (1st ALT)\t[8]out-frame (1st ALT)\t[9]not applicable (1st ALT)\t[10]out/(in+out) ratio (1st ALT)\n");
+        fprintf(bcftools_stdout, "# FS, Indel frameshifts:\n# FS\t[2]id\t[3]in-frame\t[4]out-frame\t[5]not applicable\t[6]out/(in+out) ratio\t[7]in-frame (1st ALT)\t[8]out-frame (1st ALT)\t[9]not applicable (1st ALT)\t[10]out/(in+out) ratio (1st ALT)\n");
         for (id=0; id<args->nstats; id++)
         {
             int in=args->stats[id].in_frame, out=args->stats[id].out_frame, na=args->stats[id].na_frame;
             int in1=args->stats[id].in_frame_alt1, out1=args->stats[id].out_frame_alt1, na1=args->stats[id].na_frame_alt1;
-            fprintf(pysam_stdout, "FS\t%d\t%d\t%d\t%d\t%.2f\t%d\t%d\t%d\t%.2f\n", id, in,out,na,out?(float)out/(in+out):0,in1,out1,na1,out1?(float)out1/(in1+out1):0);
+            fprintf(bcftools_stdout, "FS\t%d\t%d\t%d\t%d\t%.2f\t%d\t%d\t%d\t%.2f\n", id, in,out,na,out?(float)out/(in+out):0,in1,out1,na1,out1?(float)out1/(in1+out1):0);
         }
     }
     if ( args->indel_ctx )
     {
-        fprintf(pysam_stdout, "# ICS, Indel context summary:\n# ICS\t[2]id\t[3]repeat-consistent\t[4]repeat-inconsistent\t[5]not applicable\t[6]c/(c+i) ratio\n");
+        fprintf(bcftools_stdout, "# ICS, Indel context:\n"
+               "#   - repeat-consistent, inconsistent and n/a: experimental and useless stats [DEPRECATED]\n");
+        fprintf(bcftools_stdout, "# ICS\t[2]id\t[3]repeat-consistent\t[4]repeat-inconsistent\t[5]not applicable\t[6]c/(c+i) ratio\n");
         for (id=0; id<args->nstats; id++)
         {
             int nc = 0, ni = 0, na = args->stats[id].n_repeat_na;
@@ -1176,25 +1425,32 @@ static void print_stats(args_t *args)
                 nc += args->stats[id].n_repeat[i][0] + args->stats[id].n_repeat[i][2];
                 ni += args->stats[id].n_repeat[i][1] + args->stats[id].n_repeat[i][3];
             }
-            fprintf(pysam_stdout, "ICS\t%d\t%d\t%d\t%d\t%.4f\n", id, nc,ni,na,nc+ni ? (float)nc/(nc+ni) : 0.0);
+            fprintf(bcftools_stdout, "ICS\t%d\t%d\t%d\t%d\t%.4f\n", id, nc,ni,na,nc+ni ? (float)nc/(nc+ni) : 0.0);
         }
-        fprintf(pysam_stdout, "# ICL, Indel context by length:\n# ICL\t[2]id\t[3]length of repeat element\t[4]repeat-consistent deletions)\t[5]repeat-inconsistent deletions\t[6]consistent insertions\t[7]inconsistent insertions\t[8]c/(c+i) ratio\n");
+        fprintf(bcftools_stdout, "# ICL, Indel context by length:\n"
+               "#   - repeat-consistent, inconsistent and n/a: experimental and useless stats [DEPRECATED]\n");
+        fprintf(bcftools_stdout, "# ICL\t[2]id\t[3]length of repeat element\t[4]repeat-consistent deletions)\t[5]repeat-inconsistent deletions\t[6]consistent insertions\t[7]inconsistent insertions\t[8]c/(c+i) ratio\n");
         for (id=0; id<args->nstats; id++)
         {
             for (i=1; i<IRC_RLEN; i++)
             {
                 int nc = args->stats[id].n_repeat[i][0]+args->stats[id].n_repeat[i][2], ni = args->stats[id].n_repeat[i][1]+args->stats[id].n_repeat[i][3];
-                fprintf(pysam_stdout, "ICL\t%d\t%d\t%d\t%d\t%d\t%d\t%.4f\n", id, i+1,
+                fprintf(bcftools_stdout, "ICL\t%d\t%d\t%d\t%d\t%d\t%d\t%.4f\n", id, i+1,
                     args->stats[id].n_repeat[i][0],args->stats[id].n_repeat[i][1],args->stats[id].n_repeat[i][2],args->stats[id].n_repeat[i][3],
                     nc+ni ? (float)nc/(nc+ni) : 0.0);
             }
         }
     }
-    fprintf(pysam_stdout, "# SiS, Singleton stats:\n# SiS\t[2]id\t[3]allele count\t[4]number of SNPs\t[5]number of transitions\t[6]number of transversions\t[7]number of indels\t[8]repeat-consistent\t[9]repeat-inconsistent\t[10]not applicable\n");
+    fprintf(bcftools_stdout, "# SiS, Singleton stats:\n"
+           "#   - allele count, i.e. the number of singleton genotypes (AC=1)\n"
+           "#   - number of transitions, see above\n"
+           "#   - number of transversions, see above\n"
+           "#   - repeat-consistent, inconsistent and n/a: experimental and useless stats [DEPRECATED]\n");
+    fprintf(bcftools_stdout, "# SiS\t[2]id\t[3]allele count\t[4]number of SNPs\t[5]number of transitions\t[6]number of transversions\t[7]number of indels\t[8]repeat-consistent\t[9]repeat-inconsistent\t[10]not applicable\n");
     for (id=0; id<args->nstats; id++)
     {
         stats_t *stats = &args->stats[id];
-        fprintf(pysam_stdout, "SiS\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", id,1,stats->af_snps[0],stats->af_ts[0],stats->af_tv[0],
+        fprintf(bcftools_stdout, "SiS\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", id,1,stats->af_snps[0],stats->af_ts[0],stats->af_tv[0],
             stats->af_repeats[0][0]+stats->af_repeats[1][0]+stats->af_repeats[2][0],stats->af_repeats[0][0],stats->af_repeats[1][0],stats->af_repeats[2][0]);
         // put the singletons stats into the first AF bin, note that not all of the stats is transferred (i.e. nrd mismatches)
         stats->af_snps[1]       += stats->af_snps[0];
@@ -1204,33 +1460,81 @@ static void print_stats(args_t *args)
         stats->af_repeats[1][1] += stats->af_repeats[1][0];
         stats->af_repeats[2][1] += stats->af_repeats[2][0];
     }
-    fprintf(pysam_stdout, "# AF, Stats by non-reference allele frequency:\n# AF\t[2]id\t[3]allele frequency\t[4]number of SNPs\t[5]number of transitions\t[6]number of transversions\t[7]number of indels\t[8]repeat-consistent\t[9]repeat-inconsistent\t[10]not applicable\n");
+    // move the singletons stats into the first AF bin, singleton stats was collected separately because of init_iaf
+    if ( args->af_gts_snps )
+    {
+        args->af_gts_snps[1].y    += args->af_gts_snps[0].y;
+        args->af_gts_snps[1].yy   += args->af_gts_snps[0].yy;
+        args->af_gts_snps[1].xx   += args->af_gts_snps[0].xx;
+        args->af_gts_snps[1].yx   += args->af_gts_snps[0].yx;
+        args->af_gts_snps[1].n    += args->af_gts_snps[0].n;
+    }
+    if ( args->af_gts_indels )
+    {
+        args->af_gts_indels[1].y  += args->af_gts_indels[0].y;
+        args->af_gts_indels[1].yy += args->af_gts_indels[0].yy;
+        args->af_gts_indels[1].xx += args->af_gts_indels[0].xx;
+        args->af_gts_indels[1].yx += args->af_gts_indels[0].yx;
+        args->af_gts_indels[1].n  += args->af_gts_indels[0].n;
+    }
+
+    fprintf(bcftools_stdout, "# AF, Stats by non-reference allele frequency:\n# AF\t[2]id\t[3]allele frequency\t[4]number of SNPs\t[5]number of transitions\t[6]number of transversions\t[7]number of indels\t[8]repeat-consistent\t[9]repeat-inconsistent\t[10]not applicable\n");
     for (id=0; id<args->nstats; id++)
     {
         stats_t *stats = &args->stats[id];
         for (i=1; i<args->m_af; i++) // note that af[1] now contains also af[0], see SiS stats output above
         {
             if ( stats->af_snps[i]+stats->af_ts[i]+stats->af_tv[i]+stats->af_repeats[0][i]+stats->af_repeats[1][i]+stats->af_repeats[2][i] == 0  ) continue;
-            fprintf(pysam_stdout, "AF\t%d\t%f\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", id,100.*(i-1)/(args->m_af-1),stats->af_snps[i],stats->af_ts[i],stats->af_tv[i],
+            double af = args->af_bins ? (bin_get_value(args->af_bins,i)+bin_get_value(args->af_bins,i-1))*0.5 : (double)(i-1)/(args->m_af-1);
+            fprintf(bcftools_stdout, "AF\t%d\t%f\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", id,af,stats->af_snps[i],stats->af_ts[i],stats->af_tv[i],
                 stats->af_repeats[0][i]+stats->af_repeats[1][i]+stats->af_repeats[2][i],stats->af_repeats[0][i],stats->af_repeats[1][i],stats->af_repeats[2][i]);
         }
     }
     #if QUAL_STATS
-        fprintf(pysam_stdout, "# QUAL, Stats by quality:\n# QUAL\t[2]id\t[3]Quality\t[4]number of SNPs\t[5]number of transitions (1st ALT)\t[6]number of transversions (1st ALT)\t[7]number of indels\n");
+        fprintf(bcftools_stdout, "# QUAL, Stats by quality\n# QUAL\t[2]id\t[3]Quality\t[4]number of SNPs\t[5]number of transitions (1st ALT)\t[6]number of transversions (1st ALT)\t[7]number of indels\n");
         for (id=0; id<args->nstats; id++)
         {
             stats_t *stats = &args->stats[id];
-            for (i=0; i<args->m_qual; i++)
+            int ndist_ts = dist_nbins(stats->qual_ts);
+            int ndist_tv = dist_nbins(stats->qual_tv);
+            int ndist_in = dist_nbins(stats->qual_indels);
+            int ndist_max = ndist_ts;
+            if ( ndist_max < ndist_tv ) ndist_max = ndist_tv;
+            if ( ndist_max < ndist_in ) ndist_max = ndist_in;
+            uint32_t beg, end;
+            uint32_t nts, ntv, nin;
+            for (i=0; i<ndist_max; i++)
             {
-                if ( stats->qual_snps[i]+stats->qual_ts[i]+stats->qual_tv[i]+stats->qual_indels[i] == 0  ) continue;
-                fprintf(pysam_stdout, "QUAL\t%d\t%d\t%d\t%d\t%d\t%d\n", id,i,stats->qual_snps[i],stats->qual_ts[i],stats->qual_tv[i],stats->qual_indels[i]);
+                nts = ntv = nin = 0;
+                float qval = -1;
+                if ( i < ndist_ts )
+                {
+                    nts = dist_get(stats->qual_ts, i, &beg, &end);
+                    qval = beg>0 ? 0.1*(beg - 1) : -1;
+                }
+                if ( i < ndist_tv )
+                {
+                    ntv = dist_get(stats->qual_tv, i, &beg, &end);
+                    if ( qval==-1 ) qval = beg > 0 ? 0.1*(beg - 1) : -1;
+                }
+                if ( i < ndist_in )
+                {
+                    nin = dist_get(stats->qual_indels, i, &beg, &end);
+                    if ( qval==-1 ) qval = beg > 0 ? 0.1*(beg - 1) : -1;
+                }
+                if ( nts+ntv+nin==0 ) continue;
+
+                fprintf(bcftools_stdout, "QUAL\t%d\t",id);
+                if ( qval==-1 ) fprintf(bcftools_stdout, ".");
+                else fprintf(bcftools_stdout, "%.1f",qval);
+                fprintf(bcftools_stdout, "\t%d\t%d\t%d\t%d\n",nts+ntv,nts,ntv,nin);
             }
         }
     #endif
     for (i=0; i<args->nusr; i++)
     {
-        fprintf(pysam_stdout, "# USR:%s, Stats by %s:\n# USR:%s\t[2]id\t[3]%s\t[4]number of SNPs\t[5]number of transitions (1st ALT)\t[6]number of transversions (1st ALT)\n",
-            args->usr[i].tag,args->usr[i].tag,args->usr[i].tag,args->usr[i].tag);
+        fprintf(bcftools_stdout, "# USR:%s/%d\t[2]id\t[3]%s/%d\t[4]number of SNPs\t[5]number of transitions (1st ALT)\t[6]number of transversions (1st ALT)\n",
+            args->usr[i].tag,args->usr[i].idx,args->usr[i].tag,args->usr[i].idx);
         for (id=0; id<args->nstats; id++)
         {
             user_stats_t *usr = &args->stats[id].usr[i];
@@ -1239,81 +1543,122 @@ static void print_stats(args_t *args)
             {
                 if ( usr->vals_ts[j]+usr->vals_tv[j] == 0 ) continue;   // skip empty bins
                 float val = usr->min + (usr->max - usr->min)*j/(usr->nbins-1);
-                const char *fmt = usr->type==BCF_HT_REAL ? "USR:%s\t%d\t%e\t%d\t%d\t%d\n" : "USR:%s\t%d\t%.0f\t%d\t%d\t%d\n";
-                fprintf(pysam_stdout, fmt,usr->tag,id,val,usr->vals_ts[j]+usr->vals_tv[j],usr->vals_ts[j],usr->vals_tv[j]);
+                const char * const fmt = usr->type==BCF_HT_REAL ? "USR:%s/%d\t%d\t%e\t%"PRIu64"\t%"PRIu64"\t%"PRIu64"\n" : "USR:%s/%d\t%d\t%.0f\t%"PRIu64"\t%"PRIu64"\t%"PRIu64"\n";
+                fprintf(bcftools_stdout, fmt,usr->tag,usr->idx,id,val,usr->vals_ts[j]+usr->vals_tv[j],usr->vals_ts[j],usr->vals_tv[j]);
             }
         }
     }
-    fprintf(pysam_stdout, "# IDD, InDel distribution:\n# IDD\t[2]id\t[3]length (deletions negative)\t[4]count\n");
+    fprintf(bcftools_stdout, "# IDD, InDel distribution:\n# IDD\t[2]id\t[3]length (deletions negative)\t[4]number of sites\t[5]number of genotypes\t[6]mean VAF\n");
     for (id=0; id<args->nstats; id++)
     {
         stats_t *stats = &args->stats[id];
         for (i=stats->m_indel-1; i>=0; i--)
-            if ( stats->deletions[i] ) fprintf(pysam_stdout, "IDD\t%d\t%d\t%d\n", id,-i-1,stats->deletions[i]);
+        {
+            if ( !stats->deletions[i] ) continue;
+            // whops, differently organized arrow, dels are together with ins
+            int bin = stats->m_indel - i - 1;
+            fprintf(bcftools_stdout, "IDD\t%d\t%d\t%d\t", id,-i-1,stats->deletions[i]);
+            if ( stats->nvaf && stats->nvaf[bin] )
+                fprintf(bcftools_stdout, "%u\t%.2f",stats->nvaf[bin],stats->dvaf[bin]/stats->nvaf[bin]);
+            else
+                fprintf(bcftools_stdout, "0\t.");
+            fprintf(bcftools_stdout, "\n");
+        }
         for (i=0; i<stats->m_indel; i++)
-            if ( stats->insertions[i] ) fprintf(pysam_stdout, "IDD\t%d\t%d\t%d\n", id,i+1,stats->insertions[i]);
+        {
+            if ( !stats->insertions[i] ) continue;
+            int bin = stats->m_indel + i + 1;
+            fprintf(bcftools_stdout, "IDD\t%d\t%d\t%d\t", id,i+1,stats->insertions[i]);
+            if ( stats->nvaf && stats->nvaf[bin] )
+                fprintf(bcftools_stdout, "%u\t%.2f",stats->nvaf[bin],stats->dvaf[bin]/stats->nvaf[bin]);
+            else
+                fprintf(bcftools_stdout, "0\t.");
+            fprintf(bcftools_stdout, "\n");
+        }
     }
-    fprintf(pysam_stdout, "# ST, Substitution types:\n# ST\t[2]id\t[3]type\t[4]count\n");
+    fprintf(bcftools_stdout, "# ST, Substitution types:\n# ST\t[2]id\t[3]type\t[4]count\n");
     for (id=0; id<args->nstats; id++)
     {
         int t;
         for (t=0; t<15; t++)
         {
             if ( t>>2 == (t&3) ) continue;
-            fprintf(pysam_stdout, "ST\t%d\t%c>%c\t%d\n", id, bcf_int2acgt(t>>2),bcf_int2acgt(t&3),args->stats[id].subst[t]);
+            fprintf(bcftools_stdout, "ST\t%d\t%c>%c\t%d\n", id, bcf_int2acgt(t>>2),bcf_int2acgt(t&3),args->stats[id].subst[t]);
         }
     }
     if ( args->files->nreaders>1 && args->files->n_smpl )
     {
-        fprintf(pysam_stdout, "SN\t%d\tnumber of samples:\t%d\n", 2, args->files->n_smpl);
+        fprintf(bcftools_stdout, "SN\t%d\tnumber of samples:\t%d\n", 2, args->files->n_smpl);
 
         int x;
-        for (x=0; x<2; x++)
+        for (x=0; x<2; x++)     // x=0: snps, x=1: indels
         {
             gtcmp_t *stats;
             if ( x==0 )
             {
-                fprintf(pysam_stdout, "# GCsAF, Genotype concordance by non-reference allele frequency (SNPs)\n# GCsAF\t[2]id\t[3]allele frequency\t[4]RR Hom matches\t[5]RA Het matches\t[6]AA Hom matches\t[7]RR Hom mismatches\t[8]RA Het mismatches\t[9]AA Hom mismatches\t[10]dosage r-squared\t[11]number of sites\n");
+                fprintf(bcftools_stdout, "# GCsAF, Genotype concordance by non-reference allele frequency (SNPs)\n# GCsAF\t[2]id\t[3]allele frequency\t[4]RR Hom matches\t[5]RA Het matches\t[6]AA Hom matches\t[7]RR Hom mismatches\t[8]RA Het mismatches\t[9]AA Hom mismatches\t[10]dosage r-squared\t[11]number of genotypes\n");
                 stats = args->af_gts_snps;
             }
             else
             {
-                fprintf(pysam_stdout, "# GCiAF, Genotype concordance by non-reference allele frequency (indels)\n# GCiAF\t[2]id\t[3]allele frequency\t[4]RR Hom matches\t[5]RA Het matches\t[6]AA Hom matches\t[7]RR Hom mismatches\t[8]RA Het mismatches\t[9]AA Hom mismatches\t[10]dosage r-squared\t[11]number of sites\n");
+                fprintf(bcftools_stdout, "# GCiAF, Genotype concordance by non-reference allele frequency (indels)\n# GCiAF\t[2]id\t[3]allele frequency\t[4]RR Hom matches\t[5]RA Het matches\t[6]AA Hom matches\t[7]RR Hom mismatches\t[8]RA Het mismatches\t[9]AA Hom mismatches\t[10]dosage r-squared\t[11]number of genotypes\n");
                 stats = args->af_gts_indels;
             }
-            uint64_t nrd_m[3] = {0,0,0}, nrd_mm[3] = {0,0,0};
+            uint64_t nrd_m[4] = {0,0,0,0}, nrd_mm[4] = {0,0,0,0};   // across all bins
             for (i=0; i<args->m_af; i++)
             {
-                int j, n = 0;
-                for (j=0; j<3; j++)
-                {
-                    n += stats[i].m[j] + stats[i].mm[j];
-                    nrd_m[j]  += stats[i].m[j];
-                    nrd_mm[j] += stats[i].mm[j];
-                }
+                int n = 0;
+                uint64_t m[4] = {0,0,0,0}, mm[4] = {0,0,0,0};    // in i-th AF bin
+                for (j=0; j<4; j++)     // rr, ra, aa hom, aa het, ./.
+                    for (k=0; k<4; k++)
+                    {
+                        n += stats[i].gt2gt[j][k];
+                        if ( j==k )
+                        {
+                            nrd_m[j] += stats[i].gt2gt[j][k];
+                            m[j]     += stats[i].gt2gt[j][k];
+                        }
+                        else
+                        {
+                            nrd_mm[j] += stats[i].gt2gt[j][k];
+                            mm[j]     += stats[i].gt2gt[j][k];
+                        }
+                    }
                 if ( !i || !n ) continue;   // skip singleton stats and empty bins
-                fprintf(pysam_stdout, "GC%cAF\t2\t%f", x==0 ? 's' : 'i', 100.*(i-1)/(args->m_af-1));
-                fprintf(pysam_stdout, "\t%"PRId64"\t%"PRId64"\t%"PRId64"", stats[i].m[T2S(GT_HOM_RR)],stats[i].m[T2S(GT_HET_RA)],stats[i].m[T2S(GT_HOM_AA)]);
-                fprintf(pysam_stdout, "\t%"PRId64"\t%"PRId64"\t%"PRId64"", stats[i].mm[T2S(GT_HOM_RR)],stats[i].mm[T2S(GT_HET_RA)],stats[i].mm[T2S(GT_HOM_AA)]);
-                fprintf(pysam_stdout, "\t%f\t%"PRId32"\n", stats[i].r2n ? stats[i].r2sum/stats[i].r2n : -1.0, stats[i].r2n);
+
+                // Pearson's r2
+                double r2 = 0;
+                if ( stats[i].n )
+                {
+                    r2  = (stats[i].yx - stats[i].x*stats[i].y/stats[i].n);
+                    r2 /= sqrt((stats[i].xx - stats[i].x*stats[i].x/stats[i].n) * (stats[i].yy - stats[i].y*stats[i].y/stats[i].n));
+                    r2 *= r2;
+                }
+                double af = args->af_bins ? (bin_get_value(args->af_bins,i)+bin_get_value(args->af_bins,i-1))*0.5 : (double)(i-1)/(args->m_af-1);
+                fprintf(bcftools_stdout, "GC%cAF\t2\t%f", x==0 ? 's' : 'i', af);
+                fprintf(bcftools_stdout, "\t%"PRIu64"\t%"PRIu64"\t%"PRIu64"", m[T2S(GT_HOM_RR)],m[T2S(GT_HET_RA)],m[T2S(GT_HOM_AA)]);
+                fprintf(bcftools_stdout, "\t%"PRIu64"\t%"PRIu64"\t%"PRIu64"", mm[T2S(GT_HOM_RR)],mm[T2S(GT_HET_RA)],mm[T2S(GT_HOM_AA)]);
+                if ( stats[i].n && !isnan(r2) ) fprintf(bcftools_stdout, "\t%f", r2);
+                else fprintf(bcftools_stdout, "\t"NA_STRING);
+                fprintf(bcftools_stdout, "\t%.0f\n", stats[i].n);
             }
 
             if ( x==0 )
             {
-                fprintf(pysam_stdout, "# NRD and discordance is calculated as follows:\n");
-                fprintf(pysam_stdout, "#   m .. number of matches\n");
-                fprintf(pysam_stdout, "#   x .. number of mismatches\n");
-                fprintf(pysam_stdout, "#   NRD = (xRR + xRA + xAA) / (xRR + xRA + xAA + mRA + mAA)\n");
-                fprintf(pysam_stdout, "#   RR discordance = xRR / (xRR + mRR)\n");
-                fprintf(pysam_stdout, "#   RA discordance = xRA / (xRA + mRA)\n");
-                fprintf(pysam_stdout, "#   AA discordance = xAA / (xAA + mAA)\n");
-                fprintf(pysam_stdout, "# Non-Reference Discordance (NRD), SNPs\n# NRDs\t[2]id\t[3]NRD\t[4]Ref/Ref discordance\t[5]Ref/Alt discordance\t[6]Alt/Alt discordance\n");
+                fprintf(bcftools_stdout, "# NRD and discordance is calculated as follows:\n");
+                fprintf(bcftools_stdout, "#   m .. number of matches\n");
+                fprintf(bcftools_stdout, "#   x .. number of mismatches\n");
+                fprintf(bcftools_stdout, "#   NRD = 100 * (xRR + xRA + xAA) / (xRR + xRA + xAA + mRA + mAA)\n");
+                fprintf(bcftools_stdout, "#   RR discordance = 100 * xRR / (xRR + mRR)\n");
+                fprintf(bcftools_stdout, "#   RA discordance = 100 * xRA / (xRA + mRA)\n");
+                fprintf(bcftools_stdout, "#   AA discordance = 100 * xAA / (xAA + mAA)\n");
+                fprintf(bcftools_stdout, "# Non-Reference Discordance (NRD), SNPs\n# NRDs\t[2]id\t[3]NRD\t[4]Ref/Ref discordance\t[5]Ref/Alt discordance\t[6]Alt/Alt discordance\n");
             }
             else
-                fprintf(pysam_stdout, "# Non-Reference Discordance (NRD), indels\n# NRDi\t[2]id\t[3]NRD\t[4]Ref/Ref discordance\t[5]Ref/Alt discordance\t[6]Alt/Alt discordance\n");
-            uint64_t m  = nrd_m[T2S(GT_HET_RA)] + nrd_m[T2S(GT_HOM_AA)];
-            uint64_t mm = nrd_mm[T2S(GT_HOM_RR)] + nrd_mm[T2S(GT_HET_RA)] + nrd_mm[T2S(GT_HOM_AA)];
-            fprintf(pysam_stdout, "NRD%c\t2\t%f\t%f\t%f\t%f\n", x==0 ? 's' : 'i',
+                fprintf(bcftools_stdout, "# Non-Reference Discordance (NRD), indels\n# NRDi\t[2]id\t[3]NRD\t[4]Ref/Ref discordance\t[5]Ref/Alt discordance\t[6]Alt/Alt discordance\n");
+            uint64_t m  = nrd_m[T2S(GT_HET_RA)] + nrd_m[T2S(GT_HOM_AA)] + nrd_m[T2S(GT_HET_AA)];
+            uint64_t mm = nrd_mm[T2S(GT_HOM_RR)] + nrd_mm[T2S(GT_HET_RA)] + nrd_mm[T2S(GT_HOM_AA)] + nrd_mm[T2S(GT_HET_AA)];
+            fprintf(bcftools_stdout, "NRD%c\t2\t%f\t%f\t%f\t%f\n", x==0 ? 's' : 'i',
                     m+mm ? mm*100.0/(m+mm) : 0,
                     nrd_m[T2S(GT_HOM_RR)]+nrd_mm[T2S(GT_HOM_RR)] ? nrd_mm[T2S(GT_HOM_RR)]*100.0/(nrd_m[T2S(GT_HOM_RR)]+nrd_mm[T2S(GT_HOM_RR)]) : 0,
                     nrd_m[T2S(GT_HET_RA)]+nrd_mm[T2S(GT_HET_RA)] ? nrd_mm[T2S(GT_HET_RA)]*100.0/(nrd_m[T2S(GT_HET_RA)]+nrd_mm[T2S(GT_HET_RA)]) : 0,
@@ -1321,45 +1666,109 @@ static void print_stats(args_t *args)
                   );
         }
 
-        for (x=0; x<2; x++)
+        for (x=0; x<2; x++) // x=0: snps, x=1: indels
         {
             gtcmp_t *stats;
-            smpl_r_t *smpl_r_array;
             if ( x==0 )
             {
-                fprintf(pysam_stdout, "# GCsS, Genotype concordance by sample (SNPs)\n# GCsS\t[2]id\t[3]sample\t[4]non-reference discordance rate\t[5]RR Hom matches\t[6]RA Het matches\t[7]AA Hom matches\t[8]RR Hom mismatches\t[9]RA Het mismatches\t[10]AA Hom mismatches\t[11]dosage r-squared\n");
+                fprintf(bcftools_stdout, "# GCsS, Genotype concordance by sample (SNPs)\n# GCsS\t[2]id\t[3]sample\t[4]non-reference discordance rate\t[5]RR Hom matches\t[6]RA Het matches\t[7]AA Hom matches\t[8]RR Hom mismatches\t[9]RA Het mismatches\t[10]AA Hom mismatches\t[11]dosage r-squared\n");
                 stats = args->smpl_gts_snps;
-                smpl_r_array = args->smpl_r_snps;
             }
             else
             {
-                fprintf(pysam_stdout, "# GCiS, Genotype concordance by sample (indels)\n# GCiS\t[2]id\t[3]sample\t[4]non-reference discordance rate\t[5]RR Hom matches\t[6]RA Het matches\t[7]AA Hom matches\t[8]RR Hom mismatches\t[9]RA Het mismatches\t[10]AA Hom mismatches\t[11]dosage r-squared\n");
+                fprintf(bcftools_stdout, "# GCiS, Genotype concordance by sample (indels)\n# GCiS\t[2]id\t[3]sample\t[4]non-reference discordance rate\t[5]RR Hom matches\t[6]RA Het matches\t[7]AA Hom matches\t[8]RR Hom mismatches\t[9]RA Het mismatches\t[10]AA Hom mismatches\t[11]dosage r-squared\n");
                 stats = args->smpl_gts_indels;
-                smpl_r_array = args->smpl_r_indels;
             }
             for (i=0; i<args->files->n_smpl; i++)
             {
-                uint64_t m  = stats[i].m[T2S(GT_HET_RA)] + stats[i].m[T2S(GT_HOM_AA)];
-                uint64_t mm = stats[i].mm[T2S(GT_HOM_RR)] + stats[i].mm[T2S(GT_HET_RA)] + stats[i].mm[T2S(GT_HOM_AA)];
-                // Calculate r by formula 19.2 - Biostatistical Analysis 4th edition - Jerrold H. Zar
-                smpl_r_t *smpl_r = smpl_r_array + i;
-                double r = 0.0;
-                if (smpl_r->n) {
-                    double sum_crossprod = smpl_r->xy-(smpl_r->x*smpl_r->y)/smpl_r->n;//per 17.3 machine formula
-                    double x2_xx = smpl_r->x2-(smpl_r->x*smpl_r->x)/smpl_r->n;
-                    double y2_yy = smpl_r->y2-(smpl_r->y*smpl_r->y)/smpl_r->n;
-                    r = (sum_crossprod)/sqrt(x2_xx*y2_yy);
+                uint64_t mm = 0, m = stats[i].gt2gt[T2S(GT_HET_RA)][T2S(GT_HET_RA)] + stats[i].gt2gt[T2S(GT_HOM_AA)][T2S(GT_HOM_AA)];
+                for (j=0; j<3; j++)
+                    for (k=0; k<3; k++)
+                        if ( j!=k ) mm += stats[i].gt2gt[j][k];
+
+                // Pearson's r2
+                double r2 = 0;
+                if ( stats[i].n )
+                {
+                    r2  = (stats[i].yx - stats[i].x*stats[i].y/stats[i].n);
+                    r2 /= sqrt((stats[i].xx - stats[i].x*stats[i].x/stats[i].n) * (stats[i].yy - stats[i].y*stats[i].y/stats[i].n));
+                    r2 *= r2;
                 }
-                fprintf(pysam_stdout, "GC%cS\t2\t%s\t%.3f",  x==0 ? 's' : 'i', args->files->samples[i], m+mm ? mm*100.0/(m+mm) : 0);
-                fprintf(pysam_stdout, "\t%"PRId64"\t%"PRId64"\t%"PRId64"", stats[i].m[T2S(GT_HOM_RR)],stats[i].m[T2S(GT_HET_RA)],stats[i].m[T2S(GT_HOM_AA)]);
-                fprintf(pysam_stdout, "\t%"PRId64"\t%"PRId64"\t%"PRId64"", stats[i].mm[T2S(GT_HOM_RR)],stats[i].mm[T2S(GT_HET_RA)],stats[i].mm[T2S(GT_HOM_AA)]);
-                if (smpl_r->n && !isnan(r)) fprintf(pysam_stdout, "\t%f\n", r*r);
-                else fprintf(pysam_stdout, "\t"NA_STRING"\n");
+                fprintf(bcftools_stdout, "GC%cS\t2\t%s\t%.3f",  x==0 ? 's' : 'i', args->files->samples[i], m+mm ? mm*100.0/(m+mm) : 0);
+                fprintf(bcftools_stdout, "\t%"PRIu64"\t%"PRIu64"\t%"PRIu64"",
+                    stats[i].gt2gt[T2S(GT_HOM_RR)][T2S(GT_HOM_RR)],
+                    stats[i].gt2gt[T2S(GT_HET_RA)][T2S(GT_HET_RA)],
+                    stats[i].gt2gt[T2S(GT_HOM_AA)][T2S(GT_HOM_AA)]);
+                fprintf(bcftools_stdout, "\t%"PRIu64"\t%"PRIu64"\t%"PRIu64"",
+                    stats[i].gt2gt[T2S(GT_HOM_RR)][T2S(GT_HET_RA)] + stats[i].gt2gt[T2S(GT_HOM_RR)][T2S(GT_HOM_AA)],
+                    stats[i].gt2gt[T2S(GT_HET_RA)][T2S(GT_HOM_RR)] + stats[i].gt2gt[T2S(GT_HET_RA)][T2S(GT_HOM_AA)],
+                    stats[i].gt2gt[T2S(GT_HOM_AA)][T2S(GT_HOM_RR)] + stats[i].gt2gt[T2S(GT_HOM_AA)][T2S(GT_HET_RA)]);
+                if ( stats[i].n && !isnan(r2) ) fprintf(bcftools_stdout, "\t%f\n", r2);
+                else fprintf(bcftools_stdout, "\t"NA_STRING"\n");
+            }
+        }
+        for (x=0; x<2; x++) // x=0: snps, x=1: indels
+        {
+                //printf("# GCiS, Genotype concordance by sample (indels)\n# GCiS\t[2]id\t[3]sample\t[4]non-reference discordance rate\t[5]RR Hom matches\t[6]RA Het matches\t[7]AA Hom matches\t[8]RR Hom mismatches\t[9]RA Het mismatches\t[10]AA Hom mismatches\t[11]dosage r-squared\n");
+
+            gtcmp_t *stats;
+            if ( x==0 )
+            {
+                fprintf(bcftools_stdout, "# GCTs, Genotype concordance table (SNPs)\n# GCTs");
+                stats = args->smpl_gts_snps;
+            }
+            else
+            {
+                fprintf(bcftools_stdout, "# GCTi, Genotype concordance table (indels)\n# GCTi");
+                stats = args->smpl_gts_indels;
+            }
+            i = 1;
+            fprintf(bcftools_stdout, "\t[%d]sample", ++i);
+            fprintf(bcftools_stdout, "\t[%d]RR Hom -> RR Hom", ++i);
+            fprintf(bcftools_stdout, "\t[%d]RR Hom -> RA Het", ++i);
+            fprintf(bcftools_stdout, "\t[%d]RR Hom -> AA Hom", ++i);
+            fprintf(bcftools_stdout, "\t[%d]RR Hom -> AA Het", ++i);
+            fprintf(bcftools_stdout, "\t[%d]RR Hom -> missing", ++i);
+            fprintf(bcftools_stdout, "\t[%d]RA Het -> RR Hom", ++i);
+            fprintf(bcftools_stdout, "\t[%d]RA Het -> RA Het", ++i);
+            fprintf(bcftools_stdout, "\t[%d]RA Het -> AA Hom", ++i);
+            fprintf(bcftools_stdout, "\t[%d]RA Het -> AA Het", ++i);
+            fprintf(bcftools_stdout, "\t[%d]RA Het -> missing", ++i);
+            fprintf(bcftools_stdout, "\t[%d]AA Hom -> RR Hom", ++i);
+            fprintf(bcftools_stdout, "\t[%d]AA Hom -> RA Het", ++i);
+            fprintf(bcftools_stdout, "\t[%d]AA Hom -> AA Hom", ++i);
+            fprintf(bcftools_stdout, "\t[%d]AA Hom -> AA Het", ++i);
+            fprintf(bcftools_stdout, "\t[%d]AA Hom -> missing", ++i);
+            fprintf(bcftools_stdout, "\t[%d]AA Het -> RR Hom", ++i);
+            fprintf(bcftools_stdout, "\t[%d]AA Het -> RA Het", ++i);
+            fprintf(bcftools_stdout, "\t[%d]AA Het -> AA Hom", ++i);
+            fprintf(bcftools_stdout, "\t[%d]AA Het -> AA Het", ++i);
+            fprintf(bcftools_stdout, "\t[%d]AA Het -> missing", ++i);
+            fprintf(bcftools_stdout, "\t[%d]missing -> RR Hom", ++i);
+            fprintf(bcftools_stdout, "\t[%d]missing -> RA Het", ++i);
+            fprintf(bcftools_stdout, "\t[%d]missing -> AA Hom", ++i);
+            fprintf(bcftools_stdout, "\t[%d]missing -> AA Het", ++i);
+            fprintf(bcftools_stdout, "\t[%d]missing -> missing\n", ++i);
+
+            for (i=0; i<args->files->n_smpl; i++)
+            {
+                fprintf(bcftools_stdout, "GCT%c\t%s",  x==0 ? 's' : 'i', args->files->samples[i]);
+                for (j=0; j<5; j++)
+                    for (k=0; k<5; k++)
+                        fprintf(bcftools_stdout, "\t%"PRIu64, stats[i].gt2gt[j][k]);
+                fprintf(bcftools_stdout, "\n");
             }
         }
     }
 
-    fprintf(pysam_stdout, "# DP, Depth distribution\n# DP\t[2]id\t[3]bin\t[4]number of genotypes\t[5]fraction of genotypes (%%)\t[6]number of sites\t[7]fraction of sites (%%)\n");
+    fprintf(bcftools_stdout, "# DP, depth:\n"
+           "#   - set id, see above\n"
+           "#   - the depth bin, corresponds to the depth (unless --depth was given)\n"
+           "#   - number of genotypes with this depth (zero unless -s/-S was given)\n"
+           "#   - fraction of genotypes with this depth (zero unless -s/-S was given)\n"
+           "#   - number of sites with this depth\n"
+           "#   - fraction of sites with this depth\n");
+    fprintf(bcftools_stdout, "# DP, Depth distribution\n# DP\t[2]id\t[3]bin\t[4]number of genotypes\t[5]fraction of genotypes (%%)\t[6]number of sites\t[7]fraction of sites (%%)\n");
     for (id=0; id<args->nstats; id++)
     {
         stats_t *stats = &args->stats[id];
@@ -1368,32 +1777,35 @@ static void print_stats(args_t *args)
         for (i=0; i<stats->dp.m_vals; i++)
         {
             if ( stats->dp.vals[i]==0 && stats->dp_sites.vals[i]==0 ) continue;
-            fprintf(pysam_stdout, "DP\t%d\t", id);
-            if ( i==0 ) fprintf(pysam_stdout, "<%d", stats->dp.min);
-            else if ( i+1==stats->dp.m_vals ) fprintf(pysam_stdout, ">%d", stats->dp.max);
-            else fprintf(pysam_stdout, "%d", idist_i2bin(&stats->dp,i));
-            fprintf(pysam_stdout, "\t%"PRId64"\t%f", stats->dp.vals[i], sum ? stats->dp.vals[i]*100./sum : 0);
-            fprintf(pysam_stdout, "\t%"PRId64"\t%f\n", stats->dp_sites.vals[i], sum_sites ? stats->dp_sites.vals[i]*100./sum_sites : 0);
+            fprintf(bcftools_stdout, "DP\t%d\t", id);
+            if ( i==0 ) fprintf(bcftools_stdout, "<%d", stats->dp.min);
+            else if ( i+1==stats->dp.m_vals ) fprintf(bcftools_stdout, ">%d", stats->dp.max);
+            else fprintf(bcftools_stdout, "%d", idist_i2bin(&stats->dp,i));
+            fprintf(bcftools_stdout, "\t%"PRIu64"\t%f", stats->dp.vals[i], sum ? stats->dp.vals[i]*100./sum : 0);
+            fprintf(bcftools_stdout, "\t%"PRIu64"\t%f\n", stats->dp_sites.vals[i], sum_sites ? stats->dp_sites.vals[i]*100./sum_sites : 0);
         }
     }
 
     if ( args->files->n_smpl )
     {
-        fprintf(pysam_stdout, "# PSC, Per-sample counts\n# PSC\t[2]id\t[3]sample\t[4]nRefHom\t[5]nNonRefHom\t[6]nHets\t[7]nTransitions\t[8]nTransversions\t[9]nIndels\t[10]average depth\t[11]nSingletons\n");
+        fprintf(bcftools_stdout, "# PSC, Per-sample counts. Note that the ref/het/hom counts include only SNPs, for indels see PSI. The rest include both SNPs and indels.\n");
+        fprintf(bcftools_stdout, "# PSC\t[2]id\t[3]sample\t[4]nRefHom\t[5]nNonRefHom\t[6]nHets\t[7]nTransitions\t[8]nTransversions\t[9]nIndels\t[10]average depth\t[11]nSingletons"
+            "\t[12]nHapRef\t[13]nHapAlt\t[14]nMissing\n");
         for (id=0; id<args->nstats; id++)
         {
             stats_t *stats = &args->stats[id];
             for (i=0; i<args->files->n_smpl; i++)
             {
                 float dp = stats->smpl_ndp[i] ? stats->smpl_dp[i]/(float)stats->smpl_ndp[i] : 0;
-                fprintf(pysam_stdout, "PSC\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%.1f\t%d\n", id,args->files->samples[i],
+                fprintf(bcftools_stdout, "PSC\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%.1f\t%d\t%d\t%d\t%d\n", id,args->files->samples[i],
                     stats->smpl_homRR[i], stats->smpl_homAA[i], stats->smpl_hets[i], stats->smpl_ts[i],
-                    stats->smpl_tv[i], stats->smpl_indels[i],dp, stats->smpl_sngl[i]);
+                    stats->smpl_tv[i], stats->smpl_indels[i],dp, stats->smpl_sngl[i], stats->smpl_hapRef[i],
+                    stats->smpl_hapAlt[i], stats->smpl_missing[i]);
             }
         }
 
-
-        fprintf(pysam_stdout, "# PSI, Per-Sample Indels\n# PSI\t[2]id\t[3]sample\t[4]in-frame\t[5]out-frame\t[6]not applicable\t[7]out/(in+out) ratio\t[8]nHets\t[9]nAA\n");
+        fprintf(bcftools_stdout, "# PSI, Per-Sample Indels. Note that alt-het genotypes with both ins and del allele are counted twice, in both nInsHets and nDelHets.\n");
+        fprintf(bcftools_stdout, "# PSI\t[2]id\t[3]sample\t[4]in-frame\t[5]out-frame\t[6]not applicable\t[7]out/(in+out) ratio\t[8]nInsHets\t[9]nDelHets\t[10]nInsAltHoms\t[11]nDelAltHoms\n");
         for (id=0; id<args->nstats; id++)
         {
             stats_t *stats = &args->stats[id];
@@ -1406,14 +1818,13 @@ static void print_stats(args_t *args)
                     in  = stats->smpl_frm_shifts[i*3 + 1];
                     out = stats->smpl_frm_shifts[i*3 + 2];
                 }
-                int nhom = stats->smpl_indel_homs[i];
-                int nhet = stats->smpl_indel_hets[i];
-                fprintf(pysam_stdout, "PSI\t%d\t%s\t%d\t%d\t%d\t%.2f\t%d\t%d\n", id,args->files->samples[i], in,out,na,in+out?1.0*out/(in+out):0,nhet,nhom);
+                fprintf(bcftools_stdout, "PSI\t%d\t%s\t%d\t%d\t%d\t%.2f\t%d\t%d\t%d\t%d\n", id,args->files->samples[i], in,out,na,in+out?1.0*out/(in+out):0,
+                    stats->smpl_ins_hets[i],stats->smpl_del_hets[i],stats->smpl_ins_homs[i],stats->smpl_del_homs[i]);
             }
         }
 
         #ifdef HWE_STATS
-        fprintf(pysam_stdout, "# HWE\n# HWE\t[2]id\t[3]1st ALT allele frequency\t[4]Number of observations\t[5]25th percentile\t[6]median\t[7]75th percentile\n");
+        fprintf(bcftools_stdout, "# HWE\n# HWE\t[2]id\t[3]1st ALT allele frequency\t[4]Number of observations\t[5]25th percentile\t[6]median\t[7]75th percentile\n");
         for (id=0; id<args->nstats; id++)
         {
             stats_t *stats = &args->stats[id];
@@ -1425,64 +1836,90 @@ static void print_stats(args_t *args)
                 for (j=0; j<args->naf_hwe; j++) sum_tot += ptr[j];
                 if ( !sum_tot ) continue;
 
+                double af = args->af_bins ? (bin_get_value(args->af_bins,i)+bin_get_value(args->af_bins,i-1))*0.5 : (double)(i-1)/(args->m_af-1);
+
                 int nprn = 3;
-                fprintf(pysam_stdout, "HWE\t%d\t%f\t%d",id,100.*(i-1)/(args->m_af-1),sum_tot);
+                fprintf(bcftools_stdout, "HWE\t%d\t%f\t%d",id,af,sum_tot);
                 for (j=0; j<args->naf_hwe; j++)
                 {
                     sum_tmp += ptr[j];
                     float frac = (float)sum_tmp/sum_tot;
                     if ( frac >= 0.75 )
                     {
-                        while (nprn>0) { fprintf(pysam_stdout, "\t%f", (float)j/args->naf_hwe); nprn--; }
+                        while (nprn>0) { fprintf(bcftools_stdout, "\t%f", (float)j/args->naf_hwe); nprn--; }
                         break;
                     }
                     if ( frac >= 0.5 )
                     {
-                        while (nprn>1) { fprintf(pysam_stdout, "\t%f", (float)j/args->naf_hwe); nprn--; }
+                        while (nprn>1) { fprintf(bcftools_stdout, "\t%f", (float)j/args->naf_hwe); nprn--; }
                         continue;
                     }
                     if ( frac >= 0.25 )
                     {
-                        while (nprn>2) { fprintf(pysam_stdout, "\t%f", (float)j/args->naf_hwe); nprn--; }
+                        while (nprn>2) { fprintf(bcftools_stdout, "\t%f", (float)j/args->naf_hwe); nprn--; }
                     }
                 }
                 assert(nprn==0);
-                fprintf(pysam_stdout, "\n");
+                fprintf(bcftools_stdout, "\n");
             }
         }
         #endif
+    }
+
+    if ( args->stats[0].smpl_vaf )
+    {
+        fprintf(bcftools_stdout, "# VAF, Variant Allele Frequency determined as fraction of alternate reads in FORMAT/AD\n");
+        fprintf(bcftools_stdout, "# VAF\t[2]id\t[3]sample\t[4]SNV VAF distribution\t[5]indel VAF distribution\n");
+        for (id=0; id<args->nstats; id++)
+        {
+            stats_t *stats = &args->stats[id];
+            for (i=0; i<args->files->n_smpl; i++)
+            {
+                fprintf(bcftools_stdout, "VAF\t%d\t%s\t", id,args->files->samples[i]);
+                for (j=0; j<21; j++) fprintf(bcftools_stdout, "%s%d",j?",":"",stats->smpl_vaf[i].snv[j]);
+                fprintf(bcftools_stdout, "\t");
+                for (j=0; j<21; j++) fprintf(bcftools_stdout, "%s%d",j?",":"",stats->smpl_vaf[i].indel[j]);
+                fprintf(bcftools_stdout, "\n");
+            }
+        }
     }
 }
 
 static void usage(void)
 {
-    fprintf(pysam_stderr, "\n");
-    fprintf(pysam_stderr, "About:   Parses VCF or BCF and produces stats which can be plotted using plot-vcfstats.\n");
-    fprintf(pysam_stderr, "         When two files are given, the program generates separate stats for intersection\n");
-    fprintf(pysam_stderr, "         and the complements. By default only sites are compared, -s/-S must given to include\n");
-    fprintf(pysam_stderr, "         also sample columns.\n");
-    fprintf(pysam_stderr, "Usage:   bcftools stats [options] <A.vcf.gz> [<B.vcf.gz>]\n");
-    fprintf(pysam_stderr, "\n");
-    fprintf(pysam_stderr, "Options:\n");
-    fprintf(pysam_stderr, "    -1, --1st-allele-only              include only 1st allele at multiallelic sites\n");
-    fprintf(pysam_stderr, "    -c, --collapse <string>            treat as identical records with <snps|indels|both|all|some|none>, see man page for details [none]\n");
-    fprintf(pysam_stderr, "    -d, --depth <int,int,int>          depth distribution: min,max,bin size [0,500,1]\n");
-    fprintf(pysam_stderr, "    -e, --exclude <expr>               exclude sites for which the expression is true (see man page for details)\n");
-    fprintf(pysam_stderr, "    -E, --exons <file.gz>              tab-delimited file with exons for indel frameshifts (chr,from,to; 1-based, inclusive, bgzip compressed)\n");
-    fprintf(pysam_stderr, "    -f, --apply-filters <list>         require at least one of the listed FILTER strings (e.g. \"PASS,.\")\n");
-    fprintf(pysam_stderr, "    -F, --fasta-ref <file>             faidx indexed reference sequence file to determine INDEL context\n");
-    fprintf(pysam_stderr, "    -i, --include <expr>               select sites for which the expression is true (see man page for details)\n");
-    fprintf(pysam_stderr, "    -I, --split-by-ID                  collect stats for sites with ID separately (known vs novel)\n");
-    fprintf(pysam_stderr, "    -r, --regions <region>             restrict to comma-separated list of regions\n");
-    fprintf(pysam_stderr, "    -R, --regions-file <file>          restrict to regions listed in a file\n");
-    fprintf(pysam_stderr, "    -s, --samples <list>               list of samples for sample stats, \"-\" to include all samples\n");
-    fprintf(pysam_stderr, "    -S, --samples-file <file>          file of samples to include\n");
-    fprintf(pysam_stderr, "    -t, --targets <region>             similar to -r but streams rather than index-jumps\n");
-    fprintf(pysam_stderr, "    -T, --targets-file <file>          similar to -R but streams rather than index-jumps\n");
-    fprintf(pysam_stderr, "    -u, --user-tstv <TAG[:min:max:n]>  collect Ts/Tv stats for any tag using the given binning [0:1:100]\n");
-    fprintf(pysam_stderr, "    -v, --verbose                      produce verbose per-site and per-sample output\n");
-    fprintf(pysam_stderr, "\n");
-    exit(1);
+    fprintf(bcftools_stderr, "\n");
+    fprintf(bcftools_stderr, "About:   Parses VCF or BCF and produces stats which can be plotted using plot-vcfstats.\n");
+    fprintf(bcftools_stderr, "         When two files are given, the program generates separate stats for intersection\n");
+    fprintf(bcftools_stderr, "         and the complements. By default only sites are compared, -s/-S must given to include\n");
+    fprintf(bcftools_stderr, "         also sample columns.\n");
+    fprintf(bcftools_stderr, "Usage:   bcftools stats [options] <A.vcf.gz> [<B.vcf.gz>]\n");
+    fprintf(bcftools_stderr, "\n");
+    fprintf(bcftools_stderr, "Options:\n");
+    fprintf(bcftools_stderr, "        --af-bins LIST               Allele frequency bins, a list (0.1,0.5,1) or a file (0.1\\n0.5\\n1)\n");
+    fprintf(bcftools_stderr, "        --af-tag STRING              Allele frequency tag to use, by default estimated from AN,AC or GT\n");
+    fprintf(bcftools_stderr, "    -1, --1st-allele-only            Include only 1st allele at multiallelic sites\n");
+    fprintf(bcftools_stderr, "    -c, --collapse STRING            Treat as identical records with <snps|indels|both|all|some|none>, see man page for details [none]\n");
+    fprintf(bcftools_stderr, "    -d, --depth INT,INT,INT          Depth distribution: min,max,bin size [0,500,1]\n");
+    fprintf(bcftools_stderr, "    -e, --exclude EXPR               Exclude sites for which the expression is true (see man page for details)\n");
+    fprintf(bcftools_stderr, "    -E, --exons FILE.gz              Tab-delimited file with exons for indel frameshifts (chr,beg,end; 1-based, inclusive, bgzip compressed)\n");
+    fprintf(bcftools_stderr, "    -f, --apply-filters LIST         Require at least one of the listed FILTER strings (e.g. \"PASS,.\")\n");
+    fprintf(bcftools_stderr, "    -F, --fasta-ref FILE             Faidx indexed reference sequence file to determine INDEL context\n");
+    fprintf(bcftools_stderr, "    -i, --include EXPR               Select sites for which the expression is true (see man page for details)\n");
+    fprintf(bcftools_stderr, "    -I, --split-by-ID                Collect stats for sites with ID separately (known vs novel)\n");
+    fprintf(bcftools_stderr, "    -r, --regions REGION             Restrict to comma-separated list of regions\n");
+    fprintf(bcftools_stderr, "    -R, --regions-file FILE          Restrict to regions listed in a file\n");
+    fprintf(bcftools_stderr, "        --regions-overlap 0|1|2      Include if POS in the region (0), record overlaps (1), variant overlaps (2) [1]\n");
+    fprintf(bcftools_stderr, "    -s, --samples LIST               List of samples for sample stats, \"-\" to include all samples\n");
+    fprintf(bcftools_stderr, "    -S, --samples-file FILE          File of samples to include\n");
+    fprintf(bcftools_stderr, "    -t, --targets REGION             Similar to -r but streams rather than index-jumps\n");
+    fprintf(bcftools_stderr, "    -T, --targets-file FILE          Similar to -R but streams rather than index-jumps\n");
+    fprintf(bcftools_stderr, "        --targets-overlap 0|1|2      Include if POS in the region (0), record overlaps (1), variant overlaps (2) [0]\n");
+    fprintf(bcftools_stderr, "    -u, --user-tstv TAG[:min:max:n]  Collect Ts/Tv stats for any tag using the given binning [0:1:100]\n");
+    fprintf(bcftools_stderr, "                                       A subfield can be selected as e.g. 'PV4[0]', here the first value of the PV4 tag\n");
+    fprintf(bcftools_stderr, "        --threads INT                Use multithreading with <int> worker threads [0]\n");
+    fprintf(bcftools_stderr, "    -v, --verbosity INT              Verbosity level\n");
+    fprintf(bcftools_stderr, "\n");
+    bcftools_exit(1);
 }
 
 int main_vcfstats(int argc, char *argv[])
@@ -1493,9 +1930,13 @@ int main_vcfstats(int argc, char *argv[])
     args->argc   = argc; args->argv = argv;
     args->dp_min = 0; args->dp_max = 500; args->dp_step = 1;
     int regions_is_file = 0, targets_is_file = 0;
+    int regions_overlap = 1;
+    int targets_overlap = 0;
 
     static struct option loptions[] =
     {
+        {"af-bins",1,0,1},
+        {"af-tag",1,0,2},
         {"1st-allele-only",0,0,'1'},
         {"include",1,0,'i'},
         {"exclude",1,0,'e'},
@@ -1503,7 +1944,9 @@ int main_vcfstats(int argc, char *argv[])
         {"collapse",1,0,'c'},
         {"regions",1,0,'r'},
         {"regions-file",1,0,'R'},
-        {"verbose",0,0,'v'},
+        {"regions-overlap",required_argument,NULL,3},
+        {"verbose",optional_argument,0,'v'},
+        {"verbosity",optional_argument,0,'v'},
         {"depth",1,0,'d'},
         {"apply-filters",1,0,'f'},
         {"exons",1,0,'E'},
@@ -1512,12 +1955,16 @@ int main_vcfstats(int argc, char *argv[])
         {"split-by-ID",0,0,'I'},
         {"targets",1,0,'t'},
         {"targets-file",1,0,'T'},
+        {"targets-overlap",required_argument,NULL,4},
         {"fasta-ref",1,0,'F'},
         {"user-tstv",1,0,'u'},
+        {"threads",1,0,9},
         {0,0,0,0}
     };
-    while ((c = getopt_long(argc, argv, "hc:r:R:e:s:S:d:i:t:T:F:f:1u:vIE:",loptions,NULL)) >= 0) {
+    while ((c = getopt_long(argc, argv, "hc:r:R:e:s:S:d:i:t:T:F:f:1u:v::IE:",loptions,NULL)) >= 0) {
         switch (c) {
+            case  1 : args->af_bins_list = optarg; break;
+            case  2 : args->af_tag = optarg; break;
             case 'u': add_user_stats(args,optarg); break;
             case '1': args->first_allele_only = 1; break;
             case 'F': args->ref_fname = optarg; break;
@@ -1533,7 +1980,16 @@ int main_vcfstats(int argc, char *argv[])
                 else if ( !strcmp(optarg,"none") ) args->files->collapse = COLLAPSE_NONE;
                 else error("The --collapse string \"%s\" not recognised.\n", optarg);
                 break;
-            case 'v': args->verbose_sites = 1; break;
+            case 'v':
+                if ( !optarg ) args->verbose_sites = 1;
+                else
+                {
+                    char *tmp;
+                    args->verbose_sites = strtol(optarg,&tmp,10);
+                    if ( *tmp || args->verbose_sites<0 ) error("Could not parse argument: --verbosity %s\n", optarg);
+                    if ( args->verbose_sites > 3 ) hts_verbose = args->verbose_sites;
+                }
+                break;
             case 'd':
                 if ( sscanf(optarg,"%d,%d,%d",&args->dp_min,&args->dp_max,&args->dp_step)!=3 )
                     error("Could not parse --depth %s\n", optarg);
@@ -1547,10 +2003,23 @@ int main_vcfstats(int argc, char *argv[])
             case 's': args->samples_list = optarg; break;
             case 'S': args->samples_list = optarg; args->samples_is_file = 1; break;
             case 'I': args->split_by_id = 1; break;
-            case 'e': args->filter_str = optarg; args->filter_logic |= FLT_EXCLUDE; break;
-            case 'i': args->filter_str = optarg; args->filter_logic |= FLT_INCLUDE; break;
+            case 'e':
+                if ( args->filter_str ) error("Error: only one -i or -e expression can be given, and they cannot be combined\n");
+                args->filter_str = optarg; args->filter_logic |= FLT_EXCLUDE; break;
+            case 'i':
+                if ( args->filter_str ) error("Error: only one -i or -e expression can be given, and they cannot be combined\n");
+                args->filter_str = optarg; args->filter_logic |= FLT_INCLUDE; break;
+            case  3 :
+                regions_overlap = parse_overlap_option(optarg);
+                if ( regions_overlap < 0 ) error("Could not parse: --regions-overlap %s\n",optarg);
+                break;
+            case  4 :
+                targets_overlap = parse_overlap_option(optarg);
+                if ( targets_overlap < 0 ) error("Could not parse: --targets-overlap %s\n",optarg);
+                break;
+            case  9 : args->n_threads = strtol(optarg, 0, 0); break;
             case 'h':
-            case '?': usage();
+            case '?': usage(); break;
             default: error("Unknown argument: %s\n", optarg);
         }
     }
@@ -1569,14 +2038,26 @@ int main_vcfstats(int argc, char *argv[])
         if ( args->split_by_id ) error("Only one file can be given with -i.\n");
     }
     if ( !args->samples_list ) args->files->max_unpack = BCF_UN_INFO;
-    if ( args->targets_list && bcf_sr_set_targets(args->files, args->targets_list, targets_is_file, 0)<0 )
-        error("Failed to read the targets: %s\n", args->targets_list);
-    if ( args->regions_list && bcf_sr_set_regions(args->files, args->regions_list, regions_is_file)<0 )
-        error("Failed to read the regions: %s\n", args->regions_list);
+    else args->files->max_unpack = BCF_UN_FMT;
+    if ( args->targets_list )
+    {
+        bcf_sr_set_opt(args->files,BCF_SR_TARGETS_OVERLAP,targets_overlap);
+        if ( bcf_sr_set_targets(args->files, args->targets_list, targets_is_file, 0)<0 )
+            error("Failed to read the targets: %s\n", args->targets_list);
+    }
+    if ( args->regions_list)
+    {
+        bcf_sr_set_opt(args->files,BCF_SR_REGIONS_OVERLAP,regions_overlap);
+        if ( bcf_sr_set_regions(args->files, args->regions_list, regions_is_file)<0 )
+            error("Failed to read the regions: %s\n", args->regions_list);
+    }
+    if ( args->n_threads && bcf_sr_set_threads(args->files, args->n_threads)<0)
+        error("Failed to create threads\n");
+
     while (fname)
     {
         if ( !bcf_sr_add_reader(args->files, fname) )
-            error("Failed to open %s: %s\n", fname,bcf_sr_strerror(args->files->errnum));
+            error("Failed to read from %s: %s\n", !strcmp("-",fname)?"standard input":fname,bcf_sr_strerror(args->files->errnum));
         fname = ++optind < argc ? argv[optind] : NULL;
     }
 

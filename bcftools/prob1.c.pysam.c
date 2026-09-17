@@ -1,9 +1,9 @@
-#include "pysam.h"
+#include "bcftools.pysam.h"
 
 /*  prob1.c -- mathematical utility functions.
 
     Copyright (C) 2010, 2011 Broad Institute.
-    Copyright (C) 2012, 2013 Genome Research Ltd.
+    Copyright (C) 2012, 2013-2014, 2017 Genome Research Ltd.
 
     Author: Heng Li <lh3@sanger.ac.uk>
 
@@ -32,18 +32,11 @@ THE SOFTWARE.  */
 #include <errno.h>
 #include <assert.h>
 #include <limits.h>
-#include <zlib.h>
 #include "prob1.h"
-
-// #include "kstring.h"
-// #include "kseq.h"
-// KSTREAM_INIT(gzFile, gzread, 16384)
 
 #define MC_MAX_EM_ITER 16
 #define MC_EM_EPS 1e-5
 #define MC_DEF_INDEL 0.15
-
-gzFile bcf_p1_fp_lk;
 
 void bcf_p1_indel_prior(bcf_p1aux_t *ma, double x)
 {
@@ -128,7 +121,7 @@ int bcf_p1_set_n1(bcf_p1aux_t *b, int n1)
 {
     if (n1 == 0 || n1 >= b->n) return -1;
     if (b->M != b->n * 2) {
-        fprintf(pysam_stderr, "[%s] unable to set `n1' when there are haploid samples.\n", __func__);
+        fprintf(bcftools_stderr, "[%s] unable to set `n1' when there are haploid samples.\n", __func__);
         return -1;
     }
     b->n1 = n1;
@@ -159,8 +152,9 @@ int test16(bcf1_t *b, anno16_t *a);
 static int cal_pdg(const bcf1_t *b, bcf_p1aux_t *ma)
 {
     int i, j;
-    long *p, tmp;
-    p = (long*) alloca(b->n_allele * sizeof(long));
+    long p_a[16], *p=p_a, tmp;
+    if (b->n_allele > 16)
+        p = (long*) malloc(b->n_allele * sizeof(long));
     memset(p, 0, sizeof(long) * b->n_allele);
 
     // Set P(D|g) for each sample and sum phread likelihoods across all samples to create lk
@@ -179,12 +173,14 @@ static int cal_pdg(const bcf1_t *b, bcf_p1aux_t *ma)
             tmp = p[j], p[j] = p[j-1], p[j-1] = tmp;
     for (i = b->n_allele - 1; i >= 0; --i)
         if ((p[i]&0xf) == 0) break;
+    if (p != p_a)
+        free(p);
     return i;
 }
 
 
-/* f0 is minor allele fraction */
-int bcf_p1_call_gt(const bcf_p1aux_t *ma, double f0, int k)
+/* f0 is freq of the ref allele */
+int bcf_p1_call_gt(const bcf_p1aux_t *ma, double f0, int k, int is_var)
 {
     double sum, g[3];
     double max, f3[3], *pdg = ma->pdg + k * 3;
@@ -205,6 +201,7 @@ int bcf_p1_call_gt(const bcf_p1aux_t *ma, double f0, int k)
         g[i] /= sum;
         if (g[i] > max) max = g[i], max_i = i;
     }
+    if ( !is_var ) { max_i = 2; max = g[2]; }   // force 0/0 genotype if the site is non-variant
     max = 1. - max;
     if (max < 1e-308) max = 1e-308;
     q = (int)(-4.343 * log(max) + .499);
@@ -302,8 +299,6 @@ static void mc_cal_y_core(bcf_p1aux_t *ma, int beg)
         }
     }
     if (z[0] != ma->z) memcpy(ma->z, z[0], sizeof(double) * (ma->M + 1));
-    if (bcf_p1_fp_lk)
-        gzwrite(bcf_p1_fp_lk, ma->z, sizeof(double) * (ma->M + 1));
 }
 
 static void mc_cal_y(bcf_p1aux_t *ma)
@@ -523,9 +518,9 @@ int bcf_p1_cal(call_t *call, bcf1_t *b, int do_contrast, bcf_p1aux_t *ma, bcf_p1
 void bcf_p1_dump_afs(bcf_p1aux_t *ma)
 {
     int k;
-    fprintf(pysam_stderr, "[afs]");
+    fprintf(bcftools_stderr, "[afs]");
     for (k = 0; k <= ma->M; ++k)
-        fprintf(pysam_stderr, " %d:%.3lf", k, ma->afs[ma->M - k]);
-    fprintf(pysam_stderr, "\n");
+        fprintf(bcftools_stderr, " %d:%.3lf", k, ma->afs[ma->M - k]);
+    fprintf(bcftools_stderr, "\n");
     memset(ma->afs, 0, sizeof(double) * (ma->M + 1));
 }

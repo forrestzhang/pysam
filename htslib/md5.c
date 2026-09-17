@@ -46,10 +46,12 @@
  * compile-time configuration.
  */
 
+#define HTS_BUILDING_LIBRARY // Enables HTSLIB_EXPORT, see htslib/hts_defs.h
 #include <config.h>
 
 #include <stdlib.h>
 #include "htslib/hts.h"
+#include "htslib/hts_endian.h"
 
 #ifndef HAVE_OPENSSL
 
@@ -94,7 +96,7 @@ struct hts_md5_context {
  * memory accesses is just an optimization.  Nothing will break if it
  * doesn't work.
  */
-#if defined(__i386__) || defined(__x86_64__) || defined(__vax__)
+#if defined(HTS_LITTLE_ENDIAN) && HTS_ALLOW_UNALIGNED != 0
 #define SET(n) \
 	(*(hts_md5_u32plus *)&ptr[(n) * 4])
 #define GET(n) \

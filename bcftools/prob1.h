@@ -1,7 +1,7 @@
 /*  prob1.h -- mathematical utility functions.
 
     Copyright (C) 2010, 2011 Broad Institute.
-    Copyright (C) 2012, 2013 Genome Research Ltd.
+    Copyright (C) 2012, 2013-2014 Genome Research Ltd.
 
     Author: Heng Li <lh3@sanger.ac.uk>
 
@@ -78,7 +78,7 @@ extern "C" {
     void bcf_p1_destroy(bcf_p1aux_t *ma);
     void bcf_p1_set_ploidy(bcf1_t *b, bcf_p1aux_t *ma);
     int bcf_p1_cal(call_t *call, bcf1_t *b, int do_contrast, bcf_p1aux_t *ma, bcf_p1rst_t *rst);
-    int bcf_p1_call_gt(const bcf_p1aux_t *ma, double f0, int k);
+    int bcf_p1_call_gt(const bcf_p1aux_t *ma, double f0, int k, int is_var);
     void bcf_p1_dump_afs(bcf_p1aux_t *ma);
     int bcf_p1_read_prior(bcf_p1aux_t *ma, const char *fn);
     int bcf_p1_set_n1(bcf_p1aux_t *b, int n1);

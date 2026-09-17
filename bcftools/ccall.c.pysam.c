@@ -1,4 +1,4 @@
-#include "pysam.h"
+#include "bcftools.pysam.h"
 
 /*  ccall.c -- consensus variant calling.
 
@@ -26,6 +26,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.  */
 
 #include <math.h>
+#include <assert.h>
 #include <htslib/kfunc.h>
 #include "call.h"
 #include "kmin.h"
@@ -142,7 +143,8 @@ static int update_bcf1(call_t *call, bcf1_t *rec, const bcf_p1rst_t *pr, double 
     int has_I16, is_var;
     float fq, r;
     anno16_t a;
-    float tmpf[4], tmpi;
+    float tmpf[4];
+    int32_t tmpi;
 
     bcf_get_info_float(call->hdr, rec, "I16", &call->anno16, &call->n16);
 
@@ -191,8 +193,6 @@ static int update_bcf1(call_t *call, bcf1_t *rec, const bcf_p1rst_t *pr, double 
             bcf_update_info_string(call->hdr, rec, "CGT", tmp);
         }
     }
-    if (pr == 0) return 1;
-
     is_var = (pr->p_ref < call->pref);
     r = is_var? pr->p_ref : pr->p_var;
 
@@ -234,11 +234,7 @@ static int update_bcf1(call_t *call, bcf1_t *rec, const bcf_p1rst_t *pr, double 
 
     // Remove unused alleles
     int nals_ori = rec->n_allele, nals = !is_var && !(call->flag & CALL_KEEPALT) ? 1 : pr->rank0 < 2? 2 : pr->rank0+1;
-    if ( call->flag & CALL_KEEPALT && call->unseen>0 )
-    {
-        assert( call->unseen==nals-1 );
-        nals--;
-    }
+    if ( call->flag & CALL_KEEPALT && call->unseen==nals-1 ) nals--;
     
     if ( nals<rec->n_allele )
     {
@@ -274,7 +270,7 @@ static int update_bcf1(call_t *call, bcf1_t *rec, const bcf_p1rst_t *pr, double 
     int i;
     for (i=0; i<rec->n_sample; i++)
     {
-        int x = ( is_var || call->output_tags & CALL_FMT_GQ ) ? bcf_p1_call_gt(p1, pr->f_exp, i) : 2;
+        int x = ( is_var || call->output_tags & CALL_FMT_GQ ) ? bcf_p1_call_gt(p1, pr->f_exp, i, is_var) : 2;
         int gt = x&3;
         if ( !call->ploidy || call->ploidy[i]==2 )
         {
@@ -310,8 +306,8 @@ static int update_bcf1(call_t *call, bcf1_t *rec, const bcf_p1rst_t *pr, double 
     // trim Number=R tags
     int out_als = 0;
     for (i=0; i<nals; i++) out_als |= 1<<i;
-    init_allele_trimming_maps(call, out_als, nals_ori);
-    mcall_trim_numberR(call, rec, nals_ori, nals, out_als);
+    init_allele_trimming_maps(call, nals_ori, out_als);
+    mcall_trim_and_update_numberR(call, rec, nals_ori, nals);
 
     return is_var;
 }

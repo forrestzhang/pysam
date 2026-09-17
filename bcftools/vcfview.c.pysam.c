@@ -1,8 +1,8 @@
-#include "pysam.h"
+#include "bcftools.pysam.h"
 
 /*  vcfview.c -- VCF/BCF conversion, view, subset and filter VCF/BCF files.
 
-    Copyright (C) 2013-2014 Genome Research Ltd.
+    Copyright (C) 2013-2026 Genome Research Ltd.
 
     Author: Shane McCarthy <sm15@sanger.ac.uk>
 
@@ -25,6 +25,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.  */
 
 #include <stdio.h>
+#include <strings.h>
 #include <unistd.h>
 #include <getopt.h>
 #include <ctype.h>
@@ -33,9 +34,11 @@ THE SOFTWARE.  */
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <math.h>
+#include <inttypes.h>
 #include <htslib/vcf.h>
 #include <htslib/synced_bcf_reader.h>
 #include <htslib/vcfutils.h>
+#include <htslib/kbitset.h>
 #include "bcftools.h"
 #include "filter.h"
 #include "htslib/khash_str2int.h"
@@ -56,6 +59,13 @@ THE SOFTWARE.  */
 #define GT_NEED_MISSING 5
 #define GT_NO_MISSING 6
 
+typedef struct
+{
+    uint32_t mask;  // VCF_SNP | VCF_MNP | VCF_INDEL | VCF_OTHER | VCF_BND | ...
+    int ref;        // VCF_REF, special because it is 0
+}
+view_vtype_t;
+
 typedef struct _args_t
 {
     filter_t *filter;
@@ -65,6 +75,7 @@ typedef struct _args_t
     bcf_srs_t *files;
     bcf_hdr_t *hdr, *hnull, *hsub; // original header, sites-only header, subset header
     char **argv, *format, *sample_names, *subset_fname, *targets_list, *regions_list;
+    int regions_overlap, targets_overlap;
     int argc, clevel, n_threads, output_type, print_header, update_info, header_only, n_samples, *imap, calc_ac;
     int trim_alts, sites_only, known, novel, min_alleles, max_alleles, private_vars, uncalled, phased;
     int min_ac, min_ac_type, max_ac, max_ac_type, min_af_type, max_af_type, gt_type;
@@ -73,12 +84,42 @@ typedef struct _args_t
     char *fn_ref, *fn_out, **samples;
     int sample_is_file, force_samples;
     char *include_types, *exclude_types;
-    int include, exclude;
+    view_vtype_t include, exclude;
     int record_cmd_line;
+    char *index_fn;
+    int write_index;
+    int trim_star_allele;
     htsFile *out;
 }
 args_t;
 
+static void parse_vtype(const char *type, view_vtype_t *flt)
+{
+    if ( !strcmp(type,"snps") || !strcmp(type,"snp") ) flt->mask |= VCF_SNP;
+    else if ( !strcmp(type,"mnps") || !strcmp(type,"mnp") ) flt->mask |= VCF_MNP;
+    else if ( !strcmp(type,"indels") || !strcmp(type,"indel") ) flt->mask |= VCF_INDEL;
+    else if ( !strcmp(type,"other") ) flt->mask |= VCF_OTHER;
+    else if ( !strcmp(type,"bnd") ) flt->mask |= VCF_BND;
+    else if ( !strcmp(type,"ref") ) flt->ref = 1;
+    else if ( !strcmp(type,"overlap") ) flt->mask |= VCF_OVERLAP;
+    else error("[E::%s] unknown type. Accepted types are snps, indels, mnps, ref, bnd, other, overlap\n",type);
+}
+static int has_vtype(bcf1_t *rec, const view_vtype_t *flt)
+{
+    if ( flt->ref )
+    {
+        int ret = bcf_has_variant_types(rec, VCF_REF, bcf_match_exact);
+        if ( ret < 0 ) error("Error: failed to determine variant type\n");
+        if ( ret > 0 ) return 1;
+    }
+    if ( flt->mask )
+    {
+        int ret = bcf_has_variant_types(rec, flt->mask, bcf_match_overlap);
+        if ( ret < 0 ) error("Error: failed to determine variant type\n");
+        if ( ret > 0 ) return 1;
+    }
+    return 0;
+}
 static void init_data(args_t *args)
 {
     int i;
@@ -86,11 +127,14 @@ static void init_data(args_t *args)
 
     if (args->calc_ac && args->update_info)
     {
-        bcf_hdr_append(args->hdr,"##INFO=<ID=AC,Number=A,Type=Integer,Description=\"Allele count in genotypes\">");
-        bcf_hdr_append(args->hdr,"##INFO=<ID=AN,Number=1,Type=Integer,Description=\"Total number of alleles in called genotypes\">");
+        if (bcf_hdr_append(args->hdr,"##INFO=<ID=AC,Number=A,Type=Integer,Description=\"Allele count in genotypes\">") < 0)
+            error_errno("[%s] Failed to add \"AC\" INFO header", __func__);
+        if (bcf_hdr_append(args->hdr,"##INFO=<ID=AN,Number=1,Type=Integer,Description=\"Total number of alleles in called genotypes\">") < 0)
+            error_errno("[%s] Failed to add \"AN\" INFO header", __func__);
     }
     if (args->record_cmd_line) bcf_hdr_append_version(args->hdr, args->argc, args->argv, "bcftools_view");
-    else bcf_hdr_sync(args->hdr);
+    else if (bcf_hdr_sync(args->hdr) < 0)
+        error_errno("[%s] Failed to update header", __func__);
 
     // setup sample data
     if (args->sample_names)
@@ -114,7 +158,7 @@ static void init_data(args_t *args)
             for (i=0; i<nsmpl; i++) {
                 if (!khash_str2int_has_key(hdr_samples,smpl[i])) {
                     if (args->force_samples) {
-                        fprintf(pysam_stderr, "Warn: exclude called for sample that does not exist in header: \"%s\"... skipping\n", smpl[i]);
+                        fprintf(bcftools_stderr, "Warn: exclude called for sample that does not exist in header: \"%s\"... skipping\n", smpl[i]);
                     } else {
                         error("Error: exclude called for sample that does not exist in header: \"%s\". Use \"--force-samples\" to ignore this error.\n", smpl[i]);
                     }
@@ -135,7 +179,7 @@ static void init_data(args_t *args)
             for (i=0; i<nsmpl; i++) {
                 if (!khash_str2int_has_key(hdr_samples,smpl[i])) {
                     if (args->force_samples) {
-                        fprintf(pysam_stderr, "Warn: subset called for sample that does not exist in header: \"%s\"... skipping\n", smpl[i]);
+                        fprintf(bcftools_stderr, "Warn: subset called for sample that does not exist in header: \"%s\"... skipping\n", smpl[i]);
                         continue;
                     } else {
                         error("Error: subset called for sample that does not exist in header: \"%s\". Use \"--force-samples\" to ignore this error.\n", smpl[i]);
@@ -149,7 +193,7 @@ static void init_data(args_t *args)
         free(smpl);
         khash_str2int_destroy(hdr_samples);
         if (args->n_samples == 0) {
-            fprintf(pysam_stderr, "Warn: subsetting has removed all samples\n");
+            fprintf(bcftools_stderr, "Warn: subsetting has removed all samples\n");
             args->sites_only = 1;
         }
     }
@@ -158,71 +202,27 @@ static void init_data(args_t *args)
         args->imap = (int*)malloc(args->n_samples * sizeof(int));
 
     // determine variant types to include/exclude
-    if (args->include_types || args->exclude_types) {
-        if (args->include_types && args->exclude_types) {
-            fprintf(pysam_stderr, "Error: only supply one of --include-types, --exclude-types options\n");
-            exit(1);
+    if ( args->include_types && args->exclude_types ) error("Error: only supply one of --include-types, --exclude-types options\n");
+    if ( args->include_types || args->exclude_types )
+    {
+        int i, n;
+        char **list = hts_readlist(args->include_types ? args->include_types : args->exclude_types, 0, &n);
+        if ( !n || !list )
+            error("Error: coult not parse the --include-types/--exclude-types type list\n");
+        for (i=0; i<n; i++)
+        {
+            parse_vtype(list[i], args->include_types ? &args->include : &args->exclude);
+            free(list[i]);
         }
-        char **type_list = 0;
-        int m = 0, n = 0;
-        const char *q, *p;
-        for (q = p = args->include_types ? args->include_types : args->exclude_types;; ++p) {
-            if (*p == ',' || *p == 0) {
-                if (m == n) {
-                    m = m? m<<1 : 16;
-                    type_list = (char**)realloc(type_list, m * sizeof(char*));
-                }
-                type_list[n] = (char*)calloc(p - q + 1, 1);
-                strncpy(type_list[n++], q, p - q);
-                q = p + 1;
-                if (*p == 0) break;
-            }
-        }
-        type_list = (char**)realloc(type_list, n * sizeof(char*));
-
-        if (args->include_types) {
-            args->include = 0;
-            for (i = 0; i < n; ++i) {
-                if (strcmp(type_list[i], "snps") == 0) args->include |= VCF_SNP;
-                else if (strcmp(type_list[i], "indels") == 0) args->include |= VCF_INDEL;
-                else if (strcmp(type_list[i], "mnps") == 0) args->include |= VCF_MNP;
-                else if (strcmp(type_list[i], "other") == 0) args->include |= VCF_OTHER;
-                else {
-                    fprintf(pysam_stderr, "[E::%s] unknown type\n", type_list[i]);
-                    fprintf(pysam_stderr, "Accepted types are snps, indels, mnps, other\n");
-                    exit(1);
-                }
-            }
-        }
-        if (args->exclude_types) {
-            args->exclude = 0;
-            for (i = 0; i < n; ++i) {
-                if (strcmp(type_list[i], "snps") == 0) args->exclude |= VCF_SNP;
-                else if (strcmp(type_list[i], "indels") == 0) args->exclude |= VCF_INDEL;
-                else if (strcmp(type_list[i], "mnps") == 0) args->exclude |= VCF_MNP;
-                else if (strcmp(type_list[i], "other") == 0) args->exclude |= VCF_OTHER;
-                else {
-                    fprintf(pysam_stderr, "[E::%s] unknown type\n", type_list[i]);
-                    fprintf(pysam_stderr, "Accepted types are snps, indels, mnps, other\n");
-                    exit(1);
-                }
-            }
-        }
-        for (i = 0; i < n; ++i)
-            free(type_list[i]);
-        free(type_list);
+        free(list);
     }
 
-    // setup output
-    char modew[8];
-    strcpy(modew, "w");
-    if (args->clevel >= 0 && args->clevel <= 9) sprintf(modew + 1, "%d", args->clevel);
-    if (args->output_type==FT_BCF) strcat(modew, "bu");         // uncompressed BCF
-    else if (args->output_type & FT_BCF) strcat(modew, "b");    // compressed BCF
-    else if (args->output_type & FT_GZ) strcat(modew,"z");      // compressed VCF
-    args->out = hts_open(args->fn_out ? args->fn_out : "-", modew);
+    char wmode[8];
+    set_wmode(wmode,args->output_type,args->fn_out,args->clevel);
+    args->out = hts_open(args->fn_out ? args->fn_out : "-", wmode);
     if ( !args->out ) error("%s: %s\n", args->fn_out,strerror(errno));
-    if ( args->n_threads ) hts_set_threads(args->out, args->n_threads);
+    if ( args->n_threads > 0)
+        hts_set_opt(args->out, HTS_OPT_THREAD_POOL, args->files->p);
 
     // headers: hdr=full header, hsub=subset header, hnull=sites only header
     if (args->sites_only){
@@ -292,7 +292,7 @@ int bcf_all_phased(const bcf_hdr_t *header, bcf1_t *line)
                 case BCF_BT_INT8:  BRANCH_INT(int8_t,  bcf_int8_vector_end); break;
                 case BCF_BT_INT16: BRANCH_INT(int16_t, bcf_int16_vector_end); break;
                 case BCF_BT_INT32: BRANCH_INT(int32_t, bcf_int32_vector_end); break;
-                default: fprintf(pysam_stderr, "[E::%s] todo: fmt_type %d\n", __func__, fmt_ptr->type); exit(1); break;
+                default: fprintf(bcftools_stderr, "[E::%s] todo: fmt_type %d\n", __func__, fmt_ptr->type); bcftools_exit(1); break;
             }
             #undef BRANCH_INT
             if (!sample_phased) {
@@ -314,12 +314,8 @@ int subset_vcf(args_t *args, bcf1_t *line)
         if ( args->known && line->d.id[0]=='.' && line->d.id[1]==0 ) return 0;  // skip sites which are novel, ID == '.'
     }
 
-    if (args->include || args->exclude)
-    {
-        int line_type = bcf_get_variant_types(line);
-        if ( args->include && !(line_type&args->include) ) return 0; // include only given variant types
-        if ( args->exclude &&   line_type&args->exclude  ) return 0; // exclude given variant types
-    }
+    if ( (args->include.mask || args->include.ref) && !has_vtype(line, &args->include) ) return 0;
+    if ( (args->exclude.mask || args->exclude.ref) &&  has_vtype(line, &args->exclude) ) return 0;
 
     if ( args->filter )
     {
@@ -338,11 +334,14 @@ int subset_vcf(args_t *args, bcf1_t *line)
             an += args->ac[i];
     }
 
+    int update_ac = args->calc_ac;
     if (args->n_samples)
     {
         int non_ref_ac_sub = 0, *ac_sub = (int*) calloc(line->n_allele,sizeof(int));
         bcf_subset(args->hdr, line, args->n_samples, args->imap);
-        if (args->calc_ac) {
+        if ( args->calc_ac && !bcf_get_fmt(args->hdr,line,"GT") ) update_ac = 0;
+        if ( update_ac )
+        {
             bcf_calc_ac(args->hsub, line, ac_sub, BCF_UN_FMT); // recalculate AC and AN
             an = 0;
             for (i=0; i<line->n_allele; i++) {
@@ -400,37 +399,37 @@ int subset_vcf(args_t *args, bcf1_t *line)
         }
     }
 
-    if (args->min_ac)
+    if (args->min_ac!=-1)
     {
         if (args->min_ac_type == ALLELE_NONREF && args->min_ac>non_ref_ac) return 0; // min AC
         else if (args->min_ac_type == ALLELE_MINOR && args->min_ac>minor_ac) return 0; // min minor AC
-        else if (args->min_ac_type == ALLELE_ALT1 && args->min_ac>args->ac[1]) return 0; // min 1st alternate AC
+        else if (args->min_ac_type == ALLELE_ALT1 && (line->n_allele<2 || args->min_ac>args->ac[1])) return 0; // min 1st alternate AC
         else if (args->min_ac_type == ALLELE_MAJOR && args->min_ac > major_ac) return 0; // min major AC
         else if (args->min_ac_type == ALLELE_NONMAJOR && args->min_ac > an-major_ac) return 0; // min non-major AC
     }
-    if (args->max_ac)
+    if (args->max_ac!=-1)
     {
         if (args->max_ac_type == ALLELE_NONREF && args->max_ac<non_ref_ac) return 0; // max AC
         else if (args->max_ac_type == ALLELE_MINOR && args->max_ac<minor_ac) return 0; // max minor AC
-        else if (args->max_ac_type == ALLELE_ALT1 && args->max_ac<args->ac[1]) return 0; // max 1st alternate AC
+        else if (args->max_ac_type == ALLELE_ALT1 && line->n_allele>=2 && args->max_ac<args->ac[1]) return 0; // max 1st alternate AC
         else if (args->max_ac_type == ALLELE_MAJOR && args->max_ac < major_ac) return 0; // max major AC
         else if (args->max_ac_type == ALLELE_NONMAJOR && args->max_ac < an-major_ac) return 0; // max non-major AC
     }
-    if (args->min_af)
+    if (args->min_af!=-1)
     {
         if (an == 0) return 0; // freq not defined, skip site
         if (args->min_af_type == ALLELE_NONREF && args->min_af>non_ref_ac/(double)an) return 0; // min AF
         else if (args->min_af_type == ALLELE_MINOR && args->min_af>minor_ac/(double)an) return 0; // min minor AF
-        else if (args->min_af_type == ALLELE_ALT1 && args->min_af>args->ac[1]/(double)an) return 0; // min 1st alternate AF
+        else if (args->min_af_type == ALLELE_ALT1 && (line->n_allele<2 || args->min_af>args->ac[1]/(double)an)) return 0; // min 1st alternate AF
         else if (args->min_af_type == ALLELE_MAJOR && args->min_af > major_ac/(double)an) return 0; // min major AF
         else if (args->min_af_type == ALLELE_NONMAJOR && args->min_af > (an-major_ac)/(double)an) return 0; // min non-major AF
     }
-    if (args->max_af)
+    if (args->max_af!=-1)
     {
         if (an == 0) return 0; // freq not defined, skip site
         if (args->max_af_type == ALLELE_NONREF && args->max_af<non_ref_ac/(double)an) return 0; // max AF
         else if (args->max_af_type == ALLELE_MINOR && args->max_af<minor_ac/(double)an) return 0; // max minor AF
-        else if (args->max_af_type == ALLELE_ALT1 && args->max_af<args->ac[1]/(double)an) return 0; // max 1st alternate AF
+        else if (args->max_af_type == ALLELE_ALT1 && line->n_allele>=2 && args->max_af<args->ac[1]/(double)an) return 0; // max 1st alternate AF
         else if (args->max_af_type == ALLELE_MAJOR && args->max_af < major_ac/(double)an) return 0; // max major AF
         else if (args->max_af_type == ALLELE_NONMAJOR && args->max_af < (an-major_ac)/(double)an) return 0; // max non-major AF
     }
@@ -438,14 +437,27 @@ int subset_vcf(args_t *args, bcf1_t *line)
         if (args->uncalled == FLT_INCLUDE && an > 0) return 0; // select uncalled
         if (args->uncalled == FLT_EXCLUDE && an == 0) return 0; // skip if uncalled
     }
-    if (args->calc_ac && args->update_info) {
+    if (update_ac && args->update_info) {
         bcf_update_info_int32(args->hdr, line, "AC", &args->ac[1], line->n_allele-1);
         bcf_update_info_int32(args->hdr, line, "AN", &an, 1);
     }
     if (args->trim_alts)
     {
         int ret = bcf_trim_alleles(args->hsub ? args->hsub : args->hdr, line);
-        if ( ret==-1 ) error("Error: some GT index is out of bounds at %s:%d\n", bcf_seqname(args->hsub ? args->hsub : args->hdr, line), line->pos+1);
+        if ( ret<0 ) error("Error: Could not trim alleles at %s:%"PRId64"\n", bcf_seqname(args->hsub ? args->hsub : args->hdr, line), (int64_t) line->pos+1);
+    }
+    if (args->trim_star_allele)
+    {
+        int iunseen;
+        if ( args->trim_star_allele && (line->n_allele > 2 || args->trim_star_allele > 1) && (iunseen=get_unseen_allele(line)) && iunseen>0 )
+        {
+            // the unobserved star allele should be trimmed, either it is variant site or trimming of all sites was requested
+            kbitset_t *rm_set = kbs_init(line->n_allele);
+            kbs_insert(rm_set, iunseen);
+            if ( bcf_remove_allele_set(args->hdr,line,rm_set) )
+                error("[%s] Error: failed to trim the unobserved allele at %s:%"PRIhts_pos"\n",__func__,bcf_seqname(args->hdr,line),line->pos+1);
+            kbs_destroy(rm_set);
+        }
     }
     if (args->phased) {
         int phased = bcf_all_phased(args->hdr, line);
@@ -481,46 +493,55 @@ void set_allele_type (int *atype, char *atype_string)
 
 static void usage(args_t *args)
 {
-    fprintf(pysam_stderr, "\n");
-    fprintf(pysam_stderr, "About:   VCF/BCF conversion, view, subset and filter VCF/BCF files.\n");
-    fprintf(pysam_stderr, "Usage:   bcftools view [options] <in.vcf.gz> [region1 [...]]\n");
-    fprintf(pysam_stderr, "\n");
-    fprintf(pysam_stderr, "Output options:\n");
-    fprintf(pysam_stderr, "    -G,   --drop-genotypes              drop individual genotype information (after subsetting if -s option set)\n");
-    fprintf(pysam_stderr, "    -h/H, --header-only/--no-header     print the header only/suppress the header in VCF output\n");
-    fprintf(pysam_stderr, "    -l,   --compression-level [0-9]     compression level: 0 uncompressed, 1 best speed, 9 best compression [%d]\n", args->clevel);
-    fprintf(pysam_stderr, "          --no-version                  do not append version and command line to the header\n");
-    fprintf(pysam_stderr, "    -o,   --output-file <file>          output file name [pysam_stdout]\n");
-    fprintf(pysam_stderr, "    -O,   --output-type <b|u|z|v>       b: compressed BCF, u: uncompressed BCF, z: compressed VCF, v: uncompressed VCF [v]\n");
-    fprintf(pysam_stderr, "    -r, --regions <region>              restrict to comma-separated list of regions\n");
-    fprintf(pysam_stderr, "    -R, --regions-file <file>           restrict to regions listed in a file\n");
-    fprintf(pysam_stderr, "    -t, --targets [^]<region>           similar to -r but streams rather than index-jumps. Exclude regions with \"^\" prefix\n");
-    fprintf(pysam_stderr, "    -T, --targets-file [^]<file>        similar to -R but streams rather than index-jumps. Exclude regions with \"^\" prefix\n");
-    fprintf(pysam_stderr, "        --threads <int>                 number of extra output compression threads [0]\n");
-    fprintf(pysam_stderr, "\n");
-    fprintf(pysam_stderr, "Subset options:\n");
-    fprintf(pysam_stderr, "    -a, --trim-alt-alleles        trim alternate alleles not seen in the subset\n");
-    fprintf(pysam_stderr, "    -I, --no-update               do not (re)calculate INFO fields for the subset (currently INFO/AC and INFO/AN)\n");
-    fprintf(pysam_stderr, "    -s, --samples [^]<list>       comma separated list of samples to include (or exclude with \"^\" prefix)\n");
-    fprintf(pysam_stderr, "    -S, --samples-file [^]<file>  file of samples to include (or exclude with \"^\" prefix)\n");
-    fprintf(pysam_stderr, "        --force-samples           only warn about unknown subset samples\n");
-    fprintf(pysam_stderr, "\n");
-    fprintf(pysam_stderr, "Filter options:\n");
-    fprintf(pysam_stderr, "    -c/C, --min-ac/--max-ac <int>[:<type>]      minimum/maximum count for non-reference (nref), 1st alternate (alt1), least frequent\n");
-    fprintf(pysam_stderr, "                                                   (minor), most frequent (major) or sum of all but most frequent (nonmajor) alleles [nref]\n");
-    fprintf(pysam_stderr, "    -f,   --apply-filters <list>                require at least one of the listed FILTER strings (e.g. \"PASS,.\")\n");
-    fprintf(pysam_stderr, "    -g,   --genotype [^]<hom|het|miss>          require one or more hom/het/missing genotype or, if prefixed with \"^\", exclude sites with hom/het/missing genotypes\n");
-    fprintf(pysam_stderr, "    -i/e, --include/--exclude <expr>            select/exclude sites for which the expression is true (see man page for details)\n");
-    fprintf(pysam_stderr, "    -k/n, --known/--novel                       select known/novel sites only (ID is not/is '.')\n");
-    fprintf(pysam_stderr, "    -m/M, --min-alleles/--max-alleles <int>     minimum/maximum number of alleles listed in REF and ALT (e.g. -m2 -M2 for biallelic sites)\n");
-    fprintf(pysam_stderr, "    -p/P, --phased/--exclude-phased             select/exclude sites where all samples are phased\n");
-    fprintf(pysam_stderr, "    -q/Q, --min-af/--max-af <float>[:<type>]    minimum/maximum frequency for non-reference (nref), 1st alternate (alt1), least frequent\n");
-    fprintf(pysam_stderr, "                                                   (minor), most frequent (major) or sum of all but most frequent (nonmajor) alleles [nref]\n");
-    fprintf(pysam_stderr, "    -u/U, --uncalled/--exclude-uncalled         select/exclude sites without a called genotype\n");
-    fprintf(pysam_stderr, "    -v/V, --types/--exclude-types <list>        select/exclude comma-separated list of variant types: snps,indels,mnps,other [null]\n");
-    fprintf(pysam_stderr, "    -x/X, --private/--exclude-private           select/exclude sites where the non-reference alleles are exclusive (private) to the subset samples\n");
-    fprintf(pysam_stderr, "\n");
-    exit(1);
+    fprintf(bcftools_stderr, "\n");
+    fprintf(bcftools_stderr, "About:   VCF/BCF conversion, view, subset and filter VCF/BCF files.\n");
+    fprintf(bcftools_stderr, "Usage:   bcftools view [options] <in.vcf.gz> [region1 [...]]\n");
+    fprintf(bcftools_stderr, "\n");
+    fprintf(bcftools_stderr, "Output options:\n");
+    fprintf(bcftools_stderr, "    -G, --drop-genotypes              Drop individual genotype information (after subsetting if -s option set)\n");
+    fprintf(bcftools_stderr, "    -h, --header-only                 Print only the header in VCF output (equivalent to bcftools head)\n");
+    fprintf(bcftools_stderr, "    -H, --no-header                   Suppress the header in VCF output\n");
+    fprintf(bcftools_stderr, "        --with-header                 Print both header and records in VCF output [default]\n");
+    fprintf(bcftools_stderr, "    -l, --compression-level [0-9]     Compression level: 0 uncompressed, 1 best speed, 9 best compression [%d]\n", args->clevel);
+    fprintf(bcftools_stderr, "        --no-version                  Do not append version and command line to the header\n");
+    fprintf(bcftools_stderr, "    -o, --output FILE                 Output file name [bcftools_stdout]\n");
+    fprintf(bcftools_stderr, "    -O, --output-type u|b|v|z[0-9]    u/b: un/compressed BCF, v/z: un/compressed VCF, 0-9: compression level [v]\n");
+    fprintf(bcftools_stderr, "    -r, --regions REGION              Restrict to comma-separated list of regions\n");
+    fprintf(bcftools_stderr, "    -R, --regions-file FILE           Restrict to regions listed in FILE\n");
+    fprintf(bcftools_stderr, "        --regions-overlap 0|1|2       Include if POS in the region (0), record overlaps (1), variant overlaps (2) [1]\n");
+    fprintf(bcftools_stderr, "    -t, --targets [^]REGION           Similar to -r but streams rather than index-jumps. Exclude regions with \"^\" prefix\n");
+    fprintf(bcftools_stderr, "    -T, --targets-file [^]FILE        Similar to -R but streams rather than index-jumps. Exclude regions with \"^\" prefix\n");
+    fprintf(bcftools_stderr, "        --targets-overlap 0|1|2       Include if POS in the region (0), record overlaps (1), variant overlaps (2) [0]\n");
+    fprintf(bcftools_stderr, "        --threads INT                 Use multithreading with INT worker threads [0]\n");
+    fprintf(bcftools_stderr, "        --verbosity INT               Verbosity level\n");
+    fprintf(bcftools_stderr, "\n");
+    fprintf(bcftools_stderr, "Subset options:\n");
+    fprintf(bcftools_stderr, "    -A, --trim-unseen-allele          Remove '<*>' or '<NON_REF>' at variant (-A) or at all (-AA) sites\n");
+    fprintf(bcftools_stderr, "    -a, --trim-alt-alleles            Trim ALT alleles not seen in the genotype fields (or their subset with -s/-S)\n");
+    fprintf(bcftools_stderr, "    -I, --no-update                   Do not (re)calculate INFO fields for the subset (currently INFO/AC and INFO/AN)\n");
+    fprintf(bcftools_stderr, "    -s, --samples [^]LIST             Comma separated list of samples to include (or exclude with \"^\" prefix). Be careful\n");
+    fprintf(bcftools_stderr, "                                        when combining filtering with sample subsetting as filtering comes (usually) first.\n");
+    fprintf(bcftools_stderr, "                                        If unsure, split sample subsetting and filtering in two commands, using -Ou when piping.\n");
+    fprintf(bcftools_stderr, "    -S, --samples-file [^]FILE        File of samples to include (or exclude with \"^\" prefix)\n");
+    fprintf(bcftools_stderr, "        --force-samples               Only warn about unknown subset samples\n");
+    fprintf(bcftools_stderr, "\n");
+    fprintf(bcftools_stderr, "Filter options:\n");
+    fprintf(bcftools_stderr, "    -c/C, --min-ac/--max-ac INT[:TYPE]     Minimum/maximum count for non-reference (nref), 1st alternate (alt1), least frequent\n");
+    fprintf(bcftools_stderr, "                                               (minor), most frequent (major) or sum of all but most frequent (nonmajor) alleles [nref]\n");
+    fprintf(bcftools_stderr, "    -f,   --apply-filters LIST             Require at least one of the listed FILTER strings (e.g. \"PASS,.\")\n");
+    fprintf(bcftools_stderr, "    -g,   --genotype [^]hom|het|miss       Require one or more hom/het/missing genotype or, if prefixed with \"^\", exclude such sites\n");
+    fprintf(bcftools_stderr, "    -i/e, --include/--exclude EXPR         Select/exclude sites for which the expression is true (see man page for details)\n");
+    fprintf(bcftools_stderr, "    -k/n, --known/--novel                  Select known/novel sites only (ID is not/is '.')\n");
+    fprintf(bcftools_stderr, "    -m/M, --min-alleles/--max-alleles INT  Minimum/maximum number of alleles listed in REF and ALT (e.g. -m2 -M2 for biallelic sites)\n");
+    fprintf(bcftools_stderr, "    -p/P, --phased/--exclude-phased        Select/exclude sites where all samples are phased\n");
+    fprintf(bcftools_stderr, "    -q/Q, --min-af/--max-af FLOAT[:TYPE]   Minimum/maximum frequency for non-reference (nref), 1st alternate (alt1), least frequent\n");
+    fprintf(bcftools_stderr, "                                               (minor), most frequent (major) or sum of all but most frequent (nonmajor) alleles [nref]\n");
+    fprintf(bcftools_stderr, "    -u/U, --uncalled/--exclude-uncalled    Select/exclude sites without a called genotype\n");
+    fprintf(bcftools_stderr, "    -v/V, --types/--exclude-types LIST     Select/exclude comma-separated list of variant types: snps,indels,mnps,ref,bnd,other,overlap [null]\n");
+    fprintf(bcftools_stderr, "    -x/X, --private/--exclude-private      Select/exclude sites where the non-reference alleles are exclusive (private) to the subset samples\n");
+    fprintf(bcftools_stderr, "    -W,   --write-index[=FMT]              Automatically index the output files [off]\n");
+    fprintf(bcftools_stderr, "\n");
+    bcftools_exit(1);
 }
 
 int main_vcfview(int argc, char *argv[])
@@ -535,6 +556,10 @@ int main_vcfview(int argc, char *argv[])
     args->output_type = FT_VCF;
     args->n_threads = 0;
     args->record_cmd_line = 1;
+    args->write_index = 0;
+    args->min_ac = args->max_ac = args->min_af = args->max_af = -1;
+    args->regions_overlap = 1;
+    args->targets_overlap = 0;
     int targets_is_file = 0, regions_is_file = 0;
 
     static struct option loptions[] =
@@ -544,9 +569,11 @@ int main_vcfview(int argc, char *argv[])
         {"threads",required_argument,NULL,9},
         {"header-only",no_argument,NULL,'h'},
         {"no-header",no_argument,NULL,'H'},
+        {"with-header",no_argument,NULL,4},
         {"exclude",required_argument,NULL,'e'},
         {"include",required_argument,NULL,'i'},
         {"trim-alt-alleles",no_argument,NULL,'a'},
+        {"trim-unseen-allele",no_argument,NULL,'A'},
         {"no-update",no_argument,NULL,'I'},
         {"drop-genotypes",no_argument,NULL,'G'},
         {"private",no_argument,NULL,'x'},
@@ -563,12 +590,15 @@ int main_vcfview(int argc, char *argv[])
         {"force-samples",no_argument,NULL,1},
         {"output-type",required_argument,NULL,'O'},
         {"output-file",required_argument,NULL,'o'},
+        {"output",required_argument,NULL,'o'},
         {"types",required_argument,NULL,'v'},
         {"exclude-types",required_argument,NULL,'V'},
         {"targets",required_argument,NULL,'t'},
         {"targets-file",required_argument,NULL,'T'},
+        {"targets-overlap",required_argument,NULL,2},
         {"regions",required_argument,NULL,'r'},
         {"regions-file",required_argument,NULL,'R'},
+        {"regions-overlap",required_argument,NULL,3},
         {"min-ac",required_argument,NULL,'c'},
         {"max-ac",required_argument,NULL,'C'},
         {"min-af",required_argument,NULL,'q'},
@@ -576,12 +606,14 @@ int main_vcfview(int argc, char *argv[])
         {"phased",no_argument,NULL,'p'},
         {"exclude-phased",no_argument,NULL,'P'},
         {"no-version",no_argument,NULL,8},
+        {"write-index",optional_argument,NULL,'W'},
+        {"verbosity",required_argument,NULL,10},
         {NULL,0,NULL,0}
     };
     char *tmp;
-    while ((c = getopt_long(argc, argv, "l:t:T:r:R:o:O:s:S:Gf:knv:V:m:M:auUhHc:C:Ii:e:xXpPq:Q:g:",loptions,NULL)) >= 0)
+    while ((c = getopt_long(argc, argv, "l:t:T:r:R:o:O:s:S:Gf:knv:V:m:M:aAuUhHc:C:Ii:e:xXpPq:Q:g:W::",loptions,NULL)) >= 0)
     {
-        char allele_type[8] = "nref";
+        char allele_type[9] = "nref";
         switch (c)
         {
             case 'O':
@@ -590,17 +622,27 @@ int main_vcfview(int argc, char *argv[])
                     case 'u': args->output_type = FT_BCF; break;
                     case 'z': args->output_type = FT_VCF_GZ; break;
                     case 'v': args->output_type = FT_VCF; break;
-                    default: error("The output type \"%s\" not recognised\n", optarg);
+                    default:
+                    {
+                        args->clevel = strtol(optarg,&tmp,10);
+                        if ( *tmp || args->clevel<0 || args->clevel>9 ) error("The output type \"%s\" not recognised\n", optarg);
+                    }
                 };
+                if ( optarg[1] )
+                {
+                    args->clevel = strtol(optarg+1,&tmp,10);
+                    if ( *tmp || args->clevel<0 || args->clevel>9 ) error("Could not parse argument: --compression-level %s\n", optarg+1);
+                }
                 break;
             case 'l':
                 args->clevel = strtol(optarg,&tmp,10);
                 if ( *tmp ) error("Could not parse argument: --compression-level %s\n", optarg);
-                args->output_type |= FT_GZ; 
+                args->output_type |= FT_GZ;
                 break;
             case 'o': args->fn_out = optarg; break;
             case 'H': args->print_header = 0; break;
             case 'h': args->header_only = 1; break;
+            case  4 : args->print_header = 1; args->header_only = 0; break;
 
             case 't': args->targets_list = optarg; break;
             case 'T': args->targets_list = optarg; targets_is_file = 1; break;
@@ -611,6 +653,7 @@ int main_vcfview(int argc, char *argv[])
             case 'S': args->sample_names = optarg; args->sample_is_file = 1; break;
             case  1 : args->force_samples = 1; break;
             case 'a': args->trim_alts = 1; args->calc_ac = 1; break;
+            case 'A': args->trim_star_allele++; break;
             case 'I': args->update_info = 0; break;
             case 'G': args->sites_only = 1; break;
 
@@ -621,19 +664,22 @@ int main_vcfview(int argc, char *argv[])
                 args->min_alleles = strtol(optarg,&tmp,10);
                 if ( *tmp ) error("Could not parse argument: --min-alleles %s\n", optarg);
                 break;
-            case 'M': 
+            case 'M':
                 args->max_alleles = strtol(optarg,&tmp,10);
                 if ( *tmp ) error("Could not parse argument: --max-alleles %s\n", optarg);
                 break;
             case 'v': args->include_types = optarg; break;
             case 'V': args->exclude_types = optarg; break;
-            case 'e': args->filter_str = optarg; args->filter_logic |= FLT_EXCLUDE; break;
-            case 'i': args->filter_str = optarg; args->filter_logic |= FLT_INCLUDE; break;
-
+            case 'e':
+                if ( args->filter_str ) error("Error: only one -i or -e expression can be given, and they cannot be combined\n");
+                args->filter_str = optarg; args->filter_logic |= FLT_EXCLUDE; break;
+            case 'i':
+                if ( args->filter_str ) error("Error: only one -i or -e expression can be given, and they cannot be combined\n");
+                args->filter_str = optarg; args->filter_logic |= FLT_INCLUDE; break;
             case 'c':
             {
                 args->min_ac_type = ALLELE_NONREF;
-                if ( sscanf(optarg,"%d:%s",&args->min_ac, allele_type)!=2 && sscanf(optarg,"%d",&args->min_ac)!=1 )
+                if ( sscanf(optarg,"%d:%8s",&args->min_ac, allele_type)!=2 && sscanf(optarg,"%d",&args->min_ac)!=1 )
                     error("Error: Could not parse --min-ac %s\n", optarg);
                 set_allele_type(&args->min_ac_type, allele_type);
                 args->calc_ac = 1;
@@ -642,7 +688,7 @@ int main_vcfview(int argc, char *argv[])
             case 'C':
             {
                 args->max_ac_type = ALLELE_NONREF;
-                if ( sscanf(optarg,"%d:%s",&args->max_ac, allele_type)!=2 && sscanf(optarg,"%d",&args->max_ac)!=1 )
+                if ( sscanf(optarg,"%d:%8s",&args->max_ac, allele_type)!=2 && sscanf(optarg,"%d",&args->max_ac)!=1 )
                     error("Error: Could not parse --max-ac %s\n", optarg);
                 set_allele_type(&args->max_ac_type, allele_type);
                 args->calc_ac = 1;
@@ -651,8 +697,8 @@ int main_vcfview(int argc, char *argv[])
             case 'q':
             {
                 args->min_af_type = ALLELE_NONREF;
-                if ( sscanf(optarg,"%f:%s",&args->min_af, allele_type)!=2 && sscanf(optarg,"%f",&args->min_af)!=1 )
-                    error("Error: Could not parse --min_af %s\n", optarg);
+                if ( sscanf(optarg,"%f:%8s",&args->min_af, allele_type)!=2 && sscanf(optarg,"%f",&args->min_af)!=1 )
+                    error("Error: Could not parse --min-af %s\n", optarg);
                 set_allele_type(&args->min_af_type, allele_type);
                 args->calc_ac = 1;
                 break;
@@ -660,8 +706,8 @@ int main_vcfview(int argc, char *argv[])
             case 'Q':
             {
                 args->max_af_type = ALLELE_NONREF;
-                if ( sscanf(optarg,"%f:%s",&args->max_af, allele_type)!=2 && sscanf(optarg,"%f",&args->max_af)!=1 )
-                    error("Error: Could not parse --min_af %s\n", optarg);
+                if ( sscanf(optarg,"%f:%8s",&args->max_af, allele_type)!=2 && sscanf(optarg,"%f",&args->max_af)!=1 )
+                    error("Error: Could not parse --max-af %s\n", optarg);
                 set_allele_type(&args->max_af_type, allele_type);
                 args->calc_ac = 1;
                 break;
@@ -684,9 +730,25 @@ int main_vcfview(int argc, char *argv[])
                 else error("The argument to -g not recognised. Expected one of hom/het/miss/^hom/^het/^miss, got \"%s\".\n", optarg);
                 break;
             }
+            case  2 :
+                args->targets_overlap = parse_overlap_option(optarg);
+                if ( args->targets_overlap < 0 ) error("Could not parse: --targets-overlap %s\n",optarg);
+                break;
+            case  3 :
+                args->regions_overlap = parse_overlap_option(optarg);
+                if ( args->regions_overlap < 0 ) error("Could not parse: --regions-overlap %s\n",optarg);
+                break;
             case  9 : args->n_threads = strtol(optarg, 0, 0); break;
             case  8 : args->record_cmd_line = 0; break;
-            case '?': usage(args);
+            case 10 :
+                if ( apply_verbosity(optarg) < 0 ) error("Could not parse argument: --verbosity %s\n", optarg);
+                break;
+
+            case 'W':
+                if (!(args->write_index = write_index_parse(optarg)))
+                    error("Unsupported index format '%s'\n", optarg);
+                break;
+            case '?': usage(args); break;
             default: error("Unknown argument: %s\n", optarg);
         }
     }
@@ -709,6 +771,7 @@ int main_vcfview(int argc, char *argv[])
     // read in the regions from the command line
     if ( args->regions_list )
     {
+        bcf_sr_set_opt(args->files,BCF_SR_REGIONS_OVERLAP,args->regions_overlap);
         if ( bcf_sr_set_regions(args->files, args->regions_list, regions_is_file)<0 )
             error("Failed to read the regions: %s\n", args->regions_list);
     }
@@ -724,31 +787,53 @@ int main_vcfview(int argc, char *argv[])
     }
     if ( args->targets_list )
     {
+        bcf_sr_set_opt(args->files,BCF_SR_TARGETS_OVERLAP,args->targets_overlap);
         if ( bcf_sr_set_targets(args->files, args->targets_list, targets_is_file, 0)<0 )
             error("Failed to read the targets: %s\n", args->targets_list);
     }
 
-    if ( !bcf_sr_add_reader(args->files, fname) ) error("Failed to open %s: %s\n", fname,bcf_sr_strerror(args->files->errnum));
+    if ( bcf_sr_set_threads(args->files, args->n_threads)<0 ) error("Failed to create threads\n");
+    if ( !bcf_sr_add_reader(args->files, fname) ) error("Failed to read from %s: %s\n", !strcmp("-",fname)?"standard input":fname,bcf_sr_strerror(args->files->errnum));
 
     init_data(args);
     bcf_hdr_t *out_hdr = args->hnull ? args->hnull : (args->hsub ? args->hsub : args->hdr);
     if (args->print_header)
-        bcf_hdr_write(args->out, out_hdr);
+    {
+        if ( bcf_hdr_write(args->out, out_hdr)!=0 ) error("[%s] Error: cannot write to %s\n", __func__,args->fn_out);
+    }
     else if ( args->output_type & FT_BCF )
         error("BCF output requires header, cannot proceed with -H\n");
+
+    if ( init_index2(args->out,out_hdr,args->fn_out, &args->index_fn,
+                     args->write_index) < 0 )
+        error("Error: failed to initialise index for %s\n",args->fn_out);
+
+    int ret = 0;
     if (!args->header_only)
     {
         while ( bcf_sr_next_line(args->files) )
         {
             bcf1_t *line = args->files->readers[0].buffer[0];
             if ( line->errcode && out_hdr!=args->hdr ) error("Undefined tags in the header, cannot proceed in the sample subset mode.\n");
-            if ( subset_vcf(args, line) )
-                bcf_write1(args->out, out_hdr, line);
+            if ( subset_vcf(args, line) && bcf_write1(args->out, out_hdr, line)!=0 ) error("[%s] Error: cannot write to %s\n", __func__,args->fn_out);
         }
+        ret = args->files->errnum;
+        if ( ret ) fprintf(bcftools_stderr,"Error: %s\n", bcf_sr_strerror(args->files->errnum));
     }
-    hts_close(args->out);
+
+    if (args->write_index)
+    {
+        if (bcf_idx_save(args->out) < 0)
+        {
+            if ( hts_close(args->out)!=0 ) error("Error: close failed %s\n", args->fn_out?args->fn_out:"bcftools_stdout");
+            error("Error: cannot write to index %s\n", args->index_fn);
+        }
+        free(args->index_fn);
+    }
+
+    if ( hts_close(args->out)!=0 ) error("Error: close failed %s\n", args->fn_out?args->fn_out:"bcftools_stdout");
     destroy_data(args);
     bcf_sr_destroy(args->files);
     free(args);
-    return 0;
+    return ret;
 }

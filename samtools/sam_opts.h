@@ -1,6 +1,6 @@
 /*  sam_opts.h -- utilities to aid parsing common command line options.
 
-    Copyright (C) 2015 Genome Research Ltd.
+    Copyright (C) 2015, 2019, 2025 Genome Research Ltd.
 
     Author: James Bonfield <jkb@sanger.ac.uk>
 
@@ -28,13 +28,15 @@ DEALINGS IN THE SOFTWARE.  */
 #include <stdio.h>
 #include <limits.h>
 #include <getopt.h>
+#include <stdbool.h>
 #include <htslib/hts.h>
 
 typedef struct sam_global_args {
     htsFormat in;
     htsFormat out;
     char *reference;
-    //int verbosity;
+    int nthreads;
+    int write_index;
 } sam_global_args;
 
 #define SAM_GLOBAL_ARGS_INIT {{0},{0}}
@@ -45,7 +47,9 @@ enum {
     SAM_OPT_OUTPUT_FMT,
     SAM_OPT_OUTPUT_FMT_OPTION,
     SAM_OPT_REFERENCE,
-    //SAM_OPT_VERBOSE
+    SAM_OPT_NTHREADS,
+    SAM_OPT_WRITE_INDEX,
+    SAM_OPT_VERBOSITY,
 };
 
 #define SAM_OPT_VAL(val, defval) ((val) == '-')? '?' : (val)? (val) : (defval)
@@ -56,13 +60,15 @@ enum {
 // 0      No short option has been assigned. Use --long-opt only.
 // '-'    Both long and short options are disabled.
 // <c>    Otherwise the equivalent short option is character <c>.
-#define SAM_OPT_GLOBAL_OPTIONS(o1, o2, o3, o4, o5) \
+#define SAM_OPT_GLOBAL_OPTIONS(o1, o2, o3, o4, o5, o6) \
     {"input-fmt",         required_argument, NULL, SAM_OPT_VAL(o1, SAM_OPT_INPUT_FMT)}, \
     {"input-fmt-option",  required_argument, NULL, SAM_OPT_VAL(o2, SAM_OPT_INPUT_FMT_OPTION)}, \
     {"output-fmt",        required_argument, NULL, SAM_OPT_VAL(o3, SAM_OPT_OUTPUT_FMT)}, \
     {"output-fmt-option", required_argument, NULL, SAM_OPT_VAL(o4, SAM_OPT_OUTPUT_FMT_OPTION)}, \
-    {"reference",         required_argument, NULL, SAM_OPT_VAL(o5, SAM_OPT_REFERENCE)}
-    //{"verbose",           no_argument,       NULL, SAM_OPT_VERBOSE}
+    {"reference",         required_argument, NULL, SAM_OPT_VAL(o5, SAM_OPT_REFERENCE)}, \
+    {"threads",           required_argument, NULL, SAM_OPT_VAL(o6, SAM_OPT_NTHREADS)}, \
+    {"write-index",       no_argument,       NULL, SAM_OPT_WRITE_INDEX}, \
+    {"verbosity",         required_argument, NULL, SAM_OPT_VERBOSITY}
 
 /*
  * Processes a standard "global" samtools long option.
@@ -79,6 +85,18 @@ enum {
  */
 int parse_sam_global_opt(int c, const char *optarg, const struct option *lopt,
                          sam_global_args *ga);
+
+/*
+ * Parse an integer from a value passed on the command-line. Return true on
+ * success, false if the string was not a valid integer.
+*/
+bool parse_int_value(const char *optarg, int *value);
+
+/*
+ * Parse an long int from a value passed on the command-line. Return true on
+ * success, false if the string was not a valid long int.
+*/
+bool parse_long_value(const char *optarg, long *value, int base);
 
 /*
  * Report the usage for global options.

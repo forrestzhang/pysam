@@ -1,6 +1,6 @@
 /*  vcfsom.c -- SOM (Self-Organizing Map) filtering.
 
-    Copyright (C) 2013-2014 Genome Research Ltd.
+    Copyright (C) 2013-2014, 2020 Genome Research Ltd.
 
     Author: Petr Danecek <pd3@sanger.ac.uk>
 
@@ -25,6 +25,7 @@ THE SOFTWARE.  */
 #include <stdio.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <assert.h>
 #include <ctype.h>
 #include <string.h>
 #include <errno.h>
@@ -35,6 +36,8 @@ THE SOFTWARE.  */
 #include <htslib/vcf.h>
 #include <htslib/synced_bcf_reader.h>
 #include <htslib/vcfutils.h>
+#include <htslib/hts_os.h>
+#include <htslib/hts_defs.h>
 #include <inttypes.h>
 #include "bcftools.h"
 
@@ -81,10 +84,9 @@ typedef struct
 args_t;
 
 static void usage(void);
-FILE *open_file(char **fname, const char *mode, const char *fmt, ...);
-void mkdir_p(const char *fmt, ...);
+FILE *open_file(char **fname, const char *mode, const char *fmt, ...) HTS_FORMAT(HTS_PRINTF_FMT, 3, 4);
 
-char *msprintf(const char *fmt, ...)
+char * HTS_FORMAT(HTS_PRINTF_FMT, 1, 2) msprintf(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
@@ -164,15 +166,16 @@ void annots_reader_close(args_t *args)
 static void som_write_map(char *prefix, som_t **som, int nsom)
 {
     FILE *fp = open_file(NULL,"w","%s.som",prefix);
-    fwrite("SOMv1",5,1,fp);
-    fwrite(&nsom,sizeof(int),1,fp);
+    size_t nw;
+    if ( (nw=fwrite("SOMv1",5,1,fp))!=5 ) error("Failed to write 5 bytes\n");
+    if ( (nw=fwrite(&nsom,sizeof(int),1,fp))!=sizeof(int) ) error("Failed to write %zu bytes\n",sizeof(int));
     int i;
     for (i=0; i<nsom; i++)
     {
-        fwrite(&som[i]->size,sizeof(int),1,fp);
-        fwrite(&som[i]->kdim,sizeof(int),1,fp);
-        fwrite(som[i]->w,sizeof(double),som[i]->size*som[i]->kdim,fp);
-        fwrite(som[i]->c,sizeof(double),som[i]->size,fp);
+        if ( (nw=fwrite(&som[i]->size,sizeof(int),1,fp))!=sizeof(int) ) error("Failed to write %zu bytes\n",sizeof(int));
+        if ( (nw=fwrite(&som[i]->kdim,sizeof(int),1,fp))!=sizeof(int) ) error("Failed to write %zu bytes\n",sizeof(int));
+        if ( (nw=fwrite(som[i]->w,sizeof(double),som[i]->size*som[i]->kdim,fp))!=sizeof(double)*som[i]->size*som[i]->kdim ) error("Failed to write %zu bytes\n",sizeof(double)*som[i]->size*som[i]->kdim);
+        if ( (nw=fwrite(som[i]->c,sizeof(double),som[i]->size,fp))!=sizeof(double)*som[i]->size ) error("Failed to write %zu bytes\n",sizeof(double)*som[i]->size);
     }
     if ( fclose(fp) ) error("%s.som: fclose failed\n",prefix);
 }
@@ -351,12 +354,12 @@ static som_t *som_init(args_t *args)
     som->bmu_th = args->bmu_th;
     som->size   = pow(som->nbin,som->ndim);
     som->w = (double*) malloc(sizeof(double)*som->size*som->kdim);
-    if ( !som->w ) error("Could not alloc %d bytes [nbin=%d ndim=%d kdim=%d]\n", sizeof(double)*som->size*som->kdim,som->nbin,som->ndim,som->kdim);
+    if ( !som->w ) error("Could not alloc %"PRIu64" bytes [nbin=%d ndim=%d kdim=%d]\n", (uint64_t)(sizeof(double)*som->size*som->kdim),som->nbin,som->ndim,som->kdim);
     som->c = (double*) calloc(som->size,sizeof(double));
-    if ( !som->w ) error("Could not alloc %d bytes [nbin=%d ndim=%d]\n", sizeof(double)*som->size,som->nbin,som->ndim);
+    if ( !som->w ) error("Could not alloc %"PRIu64" bytes [nbin=%d ndim=%d]\n", (uint64_t)(sizeof(double)*som->size),som->nbin,som->ndim);
     int i;
     for (i=0; i<som->size*som->kdim; i++)
-        som->w[i] = (double)random()/RAND_MAX;
+        som->w[i] = random();
     som->a_idx = (int*) malloc(sizeof(int)*som->ndim);
     som->b_idx = (int*) malloc(sizeof(int)*som->ndim);
     som->div   = (double*) malloc(sizeof(double)*som->ndim);
@@ -453,7 +456,7 @@ static void create_eval_plot(args_t *args)
             "import csv\n"
             "csv.register_dialect('tab', delimiter='\\t', quoting=csv.QUOTE_NONE)\n"
             "dat = []\n"
-            "with open('%s.eval', 'rb') as f:\n"
+            "with open('%s.eval', 'r') as f:\n"
             "\treader = csv.reader(f, 'tab')\n"
             "\tfor row in reader:\n"
             "\t\tif row[0][0]!='#': dat.append(row)\n"
@@ -695,7 +698,7 @@ int main_vcfsom(int argc, char *argv[])
             case 't': args->action = SOM_TRAIN; break;
             case 'c': args->action = SOM_CLASSIFY; break;
             case 'h':
-            case '?': usage();
+            case '?': usage(); break;
             default: error("Unknown argument: %s\n", optarg);
         }
     }

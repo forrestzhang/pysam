@@ -1,6 +1,6 @@
 /*  plugin.c -- low-level path parsing and plugin functions.
 
-    Copyright (C) 2015 Genome Research Ltd.
+    Copyright (C) 2015-2016, 2020 Genome Research Ltd.
 
     Author: John Marshall <jm18@sanger.ac.uk>
 
@@ -39,20 +39,12 @@ DEALINGS IN THE SOFTWARE.  */
 #define PLUGINPATH ""
 #endif
 
-#ifdef __APPLE__
-#define PLUGIN_EXT ".bundle"
-#define PLUGIN_EXT_LEN 7
-#else
-#define PLUGIN_EXT ".so"
-#define PLUGIN_EXT_LEN 3
-#endif
-
 static DIR *open_nextdir(struct hts_path_itr *itr)
 {
     DIR *dir;
 
     while (1) {
-        const char *colon = strchr(itr->pathdir, ':');
+        const char *colon = strchr(itr->pathdir, HTS_PATH_SEPARATOR_CHAR);
         if (colon == NULL) return NULL;
 
         itr->entry.l = 0;
@@ -82,7 +74,7 @@ void hts_path_itr_setup(struct hts_path_itr *itr, const char *path,
     itr->prefix_len = prefix_len;
 
     if (suffix) itr->suffix = suffix, itr->suffix_len = suffix_len;
-    else itr->suffix = PLUGIN_EXT, itr->suffix_len = PLUGIN_EXT_LEN;
+    else itr->suffix = PLUGIN_EXT, itr->suffix_len = strlen(PLUGIN_EXT);
 
     itr->path.l = itr->path.m = 0; itr->path.s = NULL;
     itr->entry.l = itr->entry.m = 0; itr->entry.s = NULL;
@@ -94,13 +86,13 @@ void hts_path_itr_setup(struct hts_path_itr *itr, const char *path,
     }
 
     while (1) {
-        size_t len = strcspn(path, ":");
+        size_t len = strcspn(path, HTS_PATH_SEPARATOR_STR);
         if (len == 0) kputs(builtin_path, &itr->path);
         else kputsn(path, len, &itr->path);
-        kputc(':', &itr->path);
+        kputc(HTS_PATH_SEPARATOR_CHAR, &itr->path);
 
         path += len;
-        if (*path == ':') path++;
+        if (*path == HTS_PATH_SEPARATOR_CHAR) path++;
         else break;
     }
 
@@ -135,13 +127,36 @@ const char *hts_path_itr_next(struct hts_path_itr *itr)
     return NULL;
 }
 
-void *load_plugin(void **pluginp, const char *filename, const char *symbol)
+
+#ifndef RTLD_NOLOAD
+#define RTLD_NOLOAD 0
+#endif
+
+plugin_void_func *load_plugin(void **pluginp, const char *filename, const char *symbol)
 {
     void *lib = dlopen(filename, RTLD_NOW | RTLD_LOCAL);
     if (lib == NULL) goto error;
 
-    void *sym = dlsym(lib, symbol);
-    if (sym == NULL) goto error;
+    plugin_void_func *sym;
+    *(void **) &sym = dlsym(lib, symbol);
+    if (sym == NULL) {
+        // Reopen the plugin with RTLD_GLOBAL and check for uniquified symbol
+        void *libg = dlopen(filename, RTLD_NOLOAD | RTLD_NOW | RTLD_GLOBAL);
+        if (libg == NULL) goto error;
+        dlclose(lib);
+        lib = libg;
+
+        kstring_t symbolg = { 0, 0, NULL };
+        kputs(symbol, &symbolg);
+        kputc('_', &symbolg);
+        const char *slash = strrchr(filename, '/');
+        const char *basename = slash? slash+1 : filename;
+        kputsn(basename, strcspn(basename, ".-+"), &symbolg);
+
+        *(void **) &sym = dlsym(lib, symbolg.s);
+        free(symbolg.s);
+        if (sym == NULL) goto error;
+    }
 
     *pluginp = lib;
     return sym;
@@ -161,6 +176,13 @@ void *plugin_sym(void *plugin, const char *name, const char **errmsg)
     return sym;
 }
 
+plugin_void_func *plugin_func(void *plugin, const char *name, const char **errmsg)
+{
+    plugin_void_func *sym;
+    *(void **) &sym = plugin_sym(plugin, name, errmsg);
+    return sym;
+}
+
 void close_plugin(void *plugin)
 {
     if (dlclose(plugin) != 0) {
@@ -168,4 +190,31 @@ void close_plugin(void *plugin)
             fprintf(stderr, "[W::%s] dlclose() failed: %s\n",
                     __func__, dlerror());
     }
+}
+
+const char *hts_plugin_path(void) {
+#ifdef ENABLE_PLUGINS
+    char *path = getenv("HTS_PATH");
+    if (!path) path = "";
+
+    kstring_t ks = {0};
+    while(1) {
+        size_t len = strcspn(path, HTS_PATH_SEPARATOR_STR);
+        if (len == 0) kputs(PLUGINPATH, &ks);
+        else kputsn(path, len, &ks);
+        kputc(HTS_PATH_SEPARATOR_CHAR, &ks);
+
+        path += len;
+        if (*path == HTS_PATH_SEPARATOR_CHAR) path++;
+        else break;
+    }
+
+    static char s_path[1024];
+    snprintf(s_path, sizeof(s_path), "%s", ks.s ? ks.s : "");
+    free(ks.s);
+
+    return s_path;
+#else
+    return NULL;
+#endif
 }

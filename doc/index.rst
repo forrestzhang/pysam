@@ -1,7 +1,7 @@
 pysam: htslib interface for python
 ==================================
 
-:Author: Andreas Heger, Kevin Jacobs and contributors
+:Author: Andreas Heger, John Marshall, Kevin Jacobs, and contributors
 :Date: |today|
 :Version: |version|
 
@@ -16,16 +16,20 @@ through indexing.
 
 This module provides a low-level wrapper around the htslib_ C-API as
 using cython and a high-level, pythonic API for convenient access to
-the data within genomic file formats. 
+the data within genomic file formats.
 
-The current version wraps *htslib-1.3*, *samtools-1.3* and
-*bcftools-1.3*.
+The current version wraps *htslib-1.24*, *samtools-1.24*, and *bcftools-1.24*.
 
 To install the latest release, type::
 
     pip install pysam
 
 See the :ref:`Installation notes <installation>` for details.
+
+This module is unrelated to NREL-PySAM_, which wraps the National Renewable
+Energy Laboratory's System Advisor Model.
+
+.. _NREL-PySAM: https://nrel-pysam.readthedocs.io/
 
 Contents
 --------
@@ -39,6 +43,7 @@ Contents
    faq.rst
    developer.rst
    release.rst
+   benchmarking.rst
    glossary.rst
 
 Indices and tables
@@ -53,20 +58,32 @@ Contents:
 References
 ----------
 
-.. [Li2009] The Sequence Alignment/Map format and SAMtools. Li H, Handsaker B, Wysoker A, Fennell T, Ruan J, Homer N, Marth G, Abecasis G, Durbin R; 1000 Genome Project Data Processing Subgroup.
-   	    Bioinformatics. 2009 Aug 15;25(16):2078-9. Epub 2009 Jun 8.
-	    `PMID: 19505943 <http://www.ncbi.nlm.nih.gov/pubmed/19505943?dopt=Abstract>`_
+.. [Li.2009] *The Sequence Alignment/Map format and SAMtools.*
+   Li H, Handsaker B, Wysoker A, Fennell T, Ruan J, Homer N, Marth G, Abecasis G, Durbin R; 1000 Genome Project Data Processing Subgroup.
+   Bioinformatics. 2009 Aug 15;25(16):2078-9.
+   Epub 2009 Jun 8 `btp352 <https://doi.org/10.1093/bioinformatics/btp352>`_.
+   PMID: `19505943 <https://pubmed.ncbi.nlm.nih.gov/19505943>`_.
+
+.. [Bonfield.2021] *HTSlib: C library for reading/writing high-throughput sequencing data.*
+   Bonfield JK, Marshall J, Danecek P, Li H, Ohan V, Whitwham A, Keane T, Davies RM.
+   GigaScience (2021) 10(2) `giab007 <https://doi.org/10.1093/gigascience/giab007>`_.
+   PMID: `33594436 <https://pubmed.ncbi.nlm.nih.gov/33594436>`_.
+
+.. [Danecek.2021] *Twelve years of SAMtools and BCFtools.*
+   Danecek P, Bonfield JK, Liddle J, Marshall J, Ohan V, Pollard MO, Whitwham A, Keane T, McCarthy SA, Davies RM, Li H.
+   GigaScience (2021) 10(2) `giab008 <https://doi.org/10.1093/gigascience/giab008>`_.
+   PMID: `33590861 <https://pubmed.ncbi.nlm.nih.gov/33590861>`_.
 
 .. seealso::
- 
+
    Information about htslib
       http://www.htslib.org
 
    The samtools homepage
       http://samtools.sourceforge.net
-   
+
    The cython C-extensions for python
-      http://cython.org/
+      https://cython.org/
 
    The python language
-      http://www.python.org
+      https://www.python.org

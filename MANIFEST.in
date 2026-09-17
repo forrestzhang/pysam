@@ -5,70 +5,45 @@
 #
 include MANIFEST.in
 include COPYING
+include NEWS
 include INSTALL
 include KNOWN_BUGS
 include THANKS
-include cy_build.py
-include requirements.txt
-include pysam/c*.pxd
-include pysam/c*.pyx
-include pysam/c*.c
+include requirements-dev.txt
+include pysam/libc*.pxd
+include pysam/libc*.pyx
+include pysam/libc*.c
 include pysam/*.c
 include pysam/*.h
-include samtools/configure
-include samtools/config.mk.in
-include samtools/config.h.in
-include samtools/*.h
-exclude samtools/config.h
-include samtools/*/*.h
-include htslib/*.c
-include htslib/*.h
-exclude htslib/config.h
-include htslib/Makefile
-include htslib/htslib_vars.mk
-include htslib/configure
-include htslib/config.mk.in
-include htslib/config.h.in
-include htslib/htslib/*.h
-include htslib/cram/*.c
-include htslib/cram/*.h
-include cy_build.py
-include pysam.py
-include requirements.txt
+exclude pysam/config.py
 
-# pysam tests
-include tests/00README.txt
-include tests/pysam_data
-include tests/tabix_data
-include tests/*.py
-#ex1.fa
-#include tests/ex1.sam.gz
-#include tests/ex3.sam
-#include tests/ex4.sam
-#include tests/ex5.sam
-#include tests/ex6.sam
-#include tests/ex7.sam
-#include tests/ex8.sam
-#include tests/ex9_fail.bam
-#include tests/ex9_nofail.bam
-#include tests/ex10.sam
-#include tests/example.py
-#include tests/pysam_test.py
-#include tests/segfault_tests.py
-#include tests/example_*.sam
-#include tests/example_btag.bam
-#include tests/tag_bug.bam
-#include tests/example.vcf40
-#include tests/example_empty_header.bam
-#include tests/test_unaligned.bam
-#include tests/issue100.bam
+include win32/*.[ch]
 
-# tabix tests
-#include tests/example.gtf.gz
-#include tests/example.gtf.gz.tbi
-#include tests/example.bed.gz
-#include tests/example.bed.gz.tbi
-#include tests/vcf-examples/*.vcf
+# exclude tests from sdist tarball as they require additional data
+prune tests/
+
+# samtools
+include samtools/LICENSE samtools/README samtools/lz4/LICENSE
+recursive-include samtools *.[ch]
+include samtools/version.sh
+exclude samtools/*config*.h
+
+# bcftools
+include bcftools/LICENSE bcftools/README
+include bcftools/*.[ch]
+include bcftools/version.sh
+exclude bcftools/*config*.h
+
+# htslib
+include htslib/LICENSE htslib/README
+recursive-include htslib *.[ch]
+exclude htslib/*config*.h
+
+include htslib/configure.ac htslib/m4/*.m4 htslib/*.in
+include htslib/configure htslib/config.guess htslib/config.sub htslib/version.sh
+include htslib/Makefile htslib/*.mk
+exclude htslib/config.mk htslib/htscodecs.mk
 
 # documentation
-include doc/*
+include doc/*.py doc/*.rst
+include doc/Makefile doc/make.bat doc/requirements-rtd.txt

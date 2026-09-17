@@ -1,6 +1,6 @@
 /*  rbuf.h -- round buffers.
 
-    Copyright (C) 2013-2014 Genome Research Ltd.
+    Copyright (C) 2013-2026 Genome Research Ltd.
 
     Author: Petr Danecek <pd3@sanger.ac.uk>
 
@@ -46,11 +46,16 @@ static inline void rbuf_init(rbuf_t *rbuf, int size)
 /**
  *  rbuf_kth() - get index of the k-th element of the round buffer
  *  @rbuf:  the rbuf_t holder
- *  @k:     0-based index
+ *  @k:     0-based index. If negative, return k-th element from the end, 1-based
  */
 static inline int rbuf_kth(rbuf_t *rbuf, int k)
 {
-    if ( k >= rbuf->n || k<0 ) return -1;
+    if ( k >= rbuf->n ) return -1;
+    if ( k < 0 )
+    {
+        k = rbuf->n + k;
+        if ( k < 0 ) return -1;
+    }
     int i = k + rbuf->f;
     if ( i >= rbuf->m ) i -= rbuf->m;
     return i;
@@ -58,9 +63,29 @@ static inline int rbuf_kth(rbuf_t *rbuf, int k)
 /**
  *  rbuf_last() - get index of the last element of the round buffer
  *  @rbuf:  the rbuf_t holder
- *
  */
-#define rbuf_last(rbuf) rbuf_kth(rbuf, (rbuf)->n - 1)
+#define rbuf_last(rbuf) rbuf_kth(rbuf, -1)
+
+/**
+ *  rbuf_ridx2l() - get linear index which correspond to rbuf index
+ *  @rbuf:  the rbuf_t holder
+ *  @idx:   0-based linear index
+ *
+ *  Returns 0-based circular index or -1 if out of bounds
+ */
+static inline int rbuf_ridx2l(rbuf_t *rbuf, int idx)
+{
+    if ( idx < 0 || idx >= rbuf->m ) return -1;
+    if ( idx >= rbuf->f )
+    {
+        int i = idx - rbuf->f;
+        if ( i >= rbuf->n ) return -1;
+        return i;
+    }
+    int i = rbuf->m - rbuf->f + idx;
+    if ( i >= rbuf->n ) return -1;
+    return i;
+}
 
 /**
  *  rbuf_next() - get index of the next element in the round buffer
@@ -195,6 +220,41 @@ static inline void rbuf_shift_n(rbuf_t *rbuf, int n)
             memset(ptr,0,sizeof(type_t)*(rbuf)->f); \
         } \
         (rbuf)->m = m; \
+    } \
+}
+
+/**
+ *  rbuf_remove_kth() - remove k-th rbuf element (0-based) and memmove the data block
+ *  @rbuf:      the rbuf holder
+ *  @type_t:    data type
+ *  @k:         k-th element to remove
+ *  @data:      data array to be modified
+ */
+#define rbuf_remove_kth(rbuf, type_t, kth, data) \
+{ \
+    int k = rbuf_kth(rbuf, kth); \
+    if ( k < (rbuf)->f )    /* shrink from back */ \
+    { \
+        int l = rbuf_kth(rbuf, -1); \
+        if ( k < l ) \
+        { \
+            type_t tmp = (data)[k]; \
+            memmove(data+k, data+k+1, (l - k)*sizeof(type_t)); \
+            (data)[l] = tmp; \
+        } \
+        (rbuf)->n--; \
+    } \
+    else                    /* shrink from front */ \
+    { \
+        if ( k > (rbuf)->f ) \
+        { \
+            type_t tmp = (data)[k]; \
+            memmove(&data[(rbuf)->f+1], &data[(rbuf)->f], (k - (rbuf)->f)*sizeof(type_t)); \
+            (data)[(rbuf)->f] = tmp; \
+        } \
+        (rbuf)->f++; \
+        (rbuf)->n--; \
+        if ( (rbuf)->f == (rbuf)->m ) (rbuf)->f = 0; \
     } \
 }
 

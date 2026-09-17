@@ -1,6 +1,6 @@
 /* The MIT License
 
-   Copyright (c) 2014-2015 Genome Research Ltd.
+   Copyright (c) 2014-2026 Genome Research Ltd.
 
    Author: Petr Danecek <pd3@sanger.ac.uk>
 
@@ -24,24 +24,33 @@
 
  */
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
-#include <htslib/hts.h>
 #include "HMM.h"
+
+typedef struct
+{
+    int nstates;            // number of hmm's states
+    uint32_t snap_at_pos;   // snapshot at this position, 0 when inactive
+    double *vit_prob;       // viterbi probabilities, NULL for uniform probs
+    double *fwd_prob;       // transition probabilities
+    double *bwd_prob;       // transition probabilities
+}
+snapshot_t;
 
 struct _hmm_t
 {
     int nstates;    // number of states
 
-    double *vprob, *vprob_tmp;  // viterbi probs [nstates]
-    uint8_t *vpath;             // viterbi path [nstates*nvpath]
-    double *bwd, *bwd_tmp;      // bwd probs [nstates]
-    double *fwd;                // fwd probs [nstates*(nfwd+1)]
+    double *vprob, *vprob_tmp;  // Viterbi probs [nstates]
+    uint8_t *vpath;             // Viterbi path [nstates*nvpath]
+    double *bwd, *bwd_tmp;      // Bwd probs [nstates]
+    double *fwd;                // Fwd probs [nstates*(nfwd+1)]
     int nvpath, nfwd;
 
-    int ntprob_arr;             // number of pre-calculated tprob matrices
+    int mtprob_arr;             // Number of allocated tprob matrices
+    int ntprob_arr;             // Number of pre-calculated tprob matrices
     double *curr_tprob, *tmp;   // Temporary arrays; curr_tprob is short lived, valid only for
                                 //  one site (that is, one step of Viterbi algorithm)
     double *tprob_arr;          // Array of transition matrices, precalculated to ntprob_arr
@@ -50,13 +59,44 @@ struct _hmm_t
     set_tprob_f set_tprob;      // Optional user function to set / modify transition probabilities
                                 //  at each site (one step of Viterbi algorithm)
     void *set_tprob_data;
-    double *init_probs;         // Initial state probabilities, NULL for uniform probs
+    snapshot_t init, state;     // Initial and current state probs. Set state from snapshot if prev_snap_pos!=0 or from init otherwise
+    snapshot_t *snapshot;       //  snapshot->snap_at_pos  .. request a snapshot at this position
+                                //  hmm->state.snap_at_pos .. the current state comes from snapshot made at this position
+    FILE *debug_fh;
 };
 
 uint8_t *hmm_get_viterbi_path(hmm_t *hmm) { return hmm->vpath; }
 double *hmm_get_tprob(hmm_t *hmm) { return hmm->tprob_arr; }
 int hmm_get_nstates(hmm_t *hmm) { return hmm->nstates; }
 double *hmm_get_fwd_bwd_prob(hmm_t *hmm) { return hmm->fwd; }
+
+int hmm_set(hmm_t *hmm, hmm_opt_t key, ...)
+{
+    va_list args;
+    switch (key)
+    {
+        case DEBUG:
+            va_start(args, key);
+            hmm->debug_fh = va_arg(args,FILE*);
+            va_end(args);
+            return 0;
+        default:
+            fprintf(stderr,"Todo: hmm_set key=%d",(int)key);
+            return -1;
+            break;
+    }
+    return 0;
+}
+void *hmm_get(hmm_t *hmm, hmm_opt_t key, ...)
+{
+    switch (key)
+    {
+        case DEBUG: return &hmm->debug_fh; break;
+        default: fprintf(stderr,"Todo: hmm_get key=%d",(int)key); return NULL; break;
+    }
+    return NULL;
+}
+
 
 static inline void multiply_matrix(int n, double *a, double *b, double *dst, double *tmp)
 {
@@ -78,43 +118,138 @@ static inline void multiply_matrix(int n, double *a, double *b, double *dst, dou
         memcpy(dst,out,sizeof(double)*n*n);
 }
 
+void hmm_init_states(hmm_t *hmm, double *probs)
+{
+    hmm->init.snap_at_pos = hmm->state.snap_at_pos = 0;
+
+    if ( !hmm->init.vit_prob )
+        hmm->init.vit_prob = (double*) malloc(sizeof(double)*hmm->nstates);
+    if ( !hmm->init.fwd_prob )
+        hmm->init.fwd_prob = (double*) malloc(sizeof(double)*hmm->nstates);
+    if ( !hmm->init.bwd_prob )
+        hmm->init.bwd_prob = (double*) malloc(sizeof(double)*hmm->nstates);
+
+    if ( !hmm->state.vit_prob )
+        hmm->state.vit_prob = (double*) malloc(sizeof(double)*hmm->nstates);
+    if ( !hmm->state.fwd_prob )
+        hmm->state.fwd_prob = (double*) malloc(sizeof(double)*hmm->nstates);
+    if ( !hmm->state.bwd_prob )
+        hmm->state.bwd_prob = (double*) malloc(sizeof(double)*hmm->nstates);
+
+    int i;
+    if ( probs )
+    {
+        memcpy(hmm->init.vit_prob,probs,sizeof(double)*hmm->nstates);
+        double sum = 0;
+        for (i=0; i<hmm->nstates; i++) sum += hmm->init.vit_prob[i];
+        for (i=0; i<hmm->nstates; i++) hmm->init.vit_prob[i] /= sum;
+    }
+    else
+        for (i=0; i<hmm->nstates; i++) hmm->init.vit_prob[i] = 1./hmm->nstates;
+
+    for (i=0; i<hmm->nstates; i++) hmm->init.bwd_prob[i] = 1;
+    memcpy(hmm->init.fwd_prob,hmm->init.vit_prob,sizeof(double)*hmm->nstates);  // these remain unchanged
+    memcpy(hmm->state.vit_prob,hmm->init.vit_prob,sizeof(double)*hmm->nstates); // can be changed by snapshotting
+    memcpy(hmm->state.fwd_prob,hmm->init.fwd_prob,sizeof(double)*hmm->nstates);
+    memcpy(hmm->state.bwd_prob,hmm->init.bwd_prob,sizeof(double)*hmm->nstates);
+}
 hmm_t *hmm_init(int nstates, double *tprob, int ntprob)
 {
     hmm_t *hmm = (hmm_t*) calloc(1,sizeof(hmm_t));
     hmm->nstates = nstates;
     hmm->curr_tprob = (double*) malloc(sizeof(double)*nstates*nstates);
     hmm->tmp = (double*) malloc(sizeof(double)*nstates*nstates);
-
-    hmm_set_tprob(hmm, tprob, ntprob);
-
+    if ( !hmm->curr_tprob || !hmm->tmp )
+    {
+        fprintf(stderr,"Failed to allocate memory\n");
+        goto err;
+    }
+    if ( hmm_set_tprob(hmm, tprob, ntprob) !=0 ) goto err;
+    hmm_init_states(hmm, NULL);
     return hmm;
+
+err:
+    hmm_destroy(hmm);
+    return NULL;
 }
 
-void hmm_init_states(hmm_t *hmm, double *probs)
+void *hmm_snapshot(hmm_t *hmm, void *_snapshot, uint32_t pos)
 {
-    if ( !probs )
+    snapshot_t *snapshot = (snapshot_t*) _snapshot;
+    if ( snapshot && snapshot->nstates!=hmm->nstates )
     {
-        free(hmm->init_probs);
-        hmm->init_probs = NULL;
+        free(snapshot);
+        snapshot = NULL;
+    }
+    if ( !snapshot )
+    {
+        // Allocate the snapshot as a single memory block so that it can be
+        // free()-ed by the user. So make sure the arrays are aligned..
+        size_t str_size = sizeof(snapshot_t);
+        size_t dbl_size = sizeof(double);
+        size_t pad_size = (dbl_size - str_size % dbl_size) % dbl_size;
+        uint8_t *mem = (uint8_t*) malloc(str_size + pad_size + dbl_size*2*hmm->nstates);
+        snapshot = (snapshot_t*) mem;
+        snapshot->nstates  = hmm->nstates;
+        snapshot->vit_prob = (double*) (mem + str_size + pad_size);
+        snapshot->fwd_prob = snapshot->vit_prob + hmm->nstates;
+    }
+    snapshot->snap_at_pos = pos;
+    hmm->snapshot = snapshot;
+    return snapshot;
+}
+void hmm_restore(hmm_t *hmm, void *_snapshot)
+{
+    snapshot_t *snapshot = (snapshot_t*) _snapshot;
+    if ( !snapshot || !snapshot->snap_at_pos )
+    {
+        hmm->state.snap_at_pos = 0;
+        memcpy(hmm->state.vit_prob,hmm->init.vit_prob,sizeof(double)*hmm->nstates);
+        memcpy(hmm->state.fwd_prob,hmm->init.fwd_prob,sizeof(double)*hmm->nstates);
+    }
+    else
+    {
+        hmm->state.snap_at_pos = snapshot->snap_at_pos;
+        memcpy(hmm->state.vit_prob,snapshot->vit_prob,sizeof(double)*hmm->nstates);
+        memcpy(hmm->state.fwd_prob,snapshot->fwd_prob,sizeof(double)*hmm->nstates);
+    }
+}
+void hmm_reset(hmm_t *hmm, void *_snapshot)
+{
+    snapshot_t *snapshot = (snapshot_t*) _snapshot;
+    if ( snapshot ) snapshot->snap_at_pos = 0;
+    hmm->state.snap_at_pos = 0;
+    memcpy(hmm->state.vit_prob,hmm->init.vit_prob,sizeof(double)*hmm->nstates);
+    memcpy(hmm->state.fwd_prob,hmm->init.fwd_prob,sizeof(double)*hmm->nstates);
+}
+
+int hmm_set_tprob(hmm_t *hmm, double *tprob, int ntprob)
+{
+    int ntprob_logic = ntprob;      // ntprob_logic controls the logic
+    if ( ntprob<=0 ) ntprob = 1;    // ntprob the number of precompputed matrices
+
+    size_t nmat = (size_t)hmm->nstates * hmm->nstates;
+
+    if ( !hmm->tprob_arr || hmm->mtprob_arr < ntprob )
+    {
+        size_t nbytes = sizeof(*hmm->tprob_arr) * nmat * ntprob;
+        double *tmp = (double*) realloc(hmm->tprob_arr, nbytes);
+        if ( !tmp )
+        {
+            fprintf(stderr,"Error: Could not allocate %zu bytes\n",nbytes);
+            return -1;
+        }
+        hmm->mtprob_arr = ntprob;
+        hmm->tprob_arr  = tmp;
     }
 
-    if ( !hmm->init_probs ) hmm->init_probs = (double*) malloc(sizeof(double)*hmm->nstates);
-    memcpy(hmm->init_probs,probs,sizeof(double)*hmm->nstates);
-}
-
-void hmm_set_tprob(hmm_t *hmm, double *tprob, int ntprob)
-{
-    hmm->ntprob_arr = ntprob;
-    if ( ntprob<=0 ) ntprob = 1;
-
-    if ( !hmm->tprob_arr )
-        hmm->tprob_arr  = (double*) malloc(sizeof(double)*hmm->nstates*hmm->nstates*ntprob);
-
-    memcpy(hmm->tprob_arr,tprob,sizeof(double)*hmm->nstates*hmm->nstates);
+    hmm->ntprob_arr = ntprob_logic;
+    memcpy(hmm->tprob_arr,tprob,sizeof(*hmm->tprob_arr)*nmat);
 
     int i;
     for (i=1; i<ntprob; i++)
-        multiply_matrix(hmm->nstates, hmm->tprob_arr, hmm->tprob_arr+(i-1)*hmm->nstates*hmm->nstates, hmm->tprob_arr+i*hmm->nstates*hmm->nstates, hmm->tmp);
+        multiply_matrix(hmm->nstates, hmm->tprob_arr, hmm->tprob_arr+(i-1)*nmat, hmm->tprob_arr+i*nmat, hmm->tmp);
+    return 0;
 }
 
 void hmm_set_tprob_func(hmm_t *hmm, set_tprob_f set_tprob, void *data)
@@ -154,23 +289,18 @@ void hmm_run_viterbi(hmm_t *hmm, int n, double *eprobs, uint32_t *sites)
         hmm->vprob_tmp = (double*) malloc(sizeof(double)*hmm->nstates);
     }
 
-
-    // Init all states with equal likelihood
+    // Init states
     int i,j, nstates = hmm->nstates;
-    if ( hmm->init_probs )
-        for (i=0; i<nstates; i++) hmm->vprob[i] = hmm->init_probs[i];
-    else
-        for (i=0; i<nstates; i++) hmm->vprob[i] = 1./nstates;
+    memcpy(hmm->vprob, hmm->state.vit_prob, sizeof(*hmm->state.vit_prob)*nstates);
+    uint32_t prev_pos = hmm->state.snap_at_pos ? hmm->state.snap_at_pos : sites[0];
 
     // Run Viterbi
-    uint32_t prev_pos = sites[0];
     for (i=0; i<n; i++)
     {
         uint8_t *vpath = &hmm->vpath[i*nstates];
         double *eprob  = &eprobs[i*nstates];
 
         int pos_diff = sites[i] == prev_pos ? 0 : sites[i] - prev_pos - 1;
-
         _set_tprob(hmm, pos_diff);
         if ( hmm->set_tprob ) hmm->set_tprob(hmm, prev_pos, sites[i], hmm->set_tprob_data, hmm->curr_tprob);
         prev_pos = sites[i];
@@ -189,21 +319,33 @@ void hmm_run_viterbi(hmm_t *hmm, int n, double *eprobs, uint32_t *sites)
             hmm->vprob_tmp[j] = vmax * eprob[j];
             vnorm += hmm->vprob_tmp[j];
         }
+
         for (j=0; j<nstates; j++) hmm->vprob_tmp[j] /= vnorm;
         double *tmp = hmm->vprob; hmm->vprob = hmm->vprob_tmp; hmm->vprob_tmp = tmp;
+
+        if ( hmm->debug_fh )
+        {
+            fprintf(hmm->debug_fh,"viterbi\t%d",i);
+            for (j=0; j<nstates; j++) fprintf(hmm->debug_fh,"\t%f",hmm->vprob[j]);
+            fprintf(hmm->debug_fh,"\n");
+        }
+
+        if ( hmm->snapshot && sites[i]==hmm->snapshot->snap_at_pos )
+            memcpy(hmm->snapshot->vit_prob, hmm->vprob, sizeof(*hmm->vprob)*nstates);
     }
 
     // Find the most likely state
     int iptr = 0;
-    for (i=1; i<nstates; i++) 
+    for (i=1; i<nstates; i++)
         if ( hmm->vprob[iptr] < hmm->vprob[i] ) iptr = i;
 
     // Trace back the Viterbi path, we are reusing vpath for storing the states (vpath[i*nstates])
     for (i=n-1; i>=0; i--)
     {
         assert( iptr<nstates && hmm->vpath[i*nstates + iptr]<nstates );
-        iptr = hmm->vpath[i*nstates + iptr];
+        int iptr_prev = hmm->vpath[i*nstates + iptr];
         hmm->vpath[i*nstates] = iptr;     // reusing the array for different purpose here
+        iptr = iptr_prev;
     }
 }
 
@@ -222,21 +364,12 @@ void hmm_run_fwd_bwd(hmm_t *hmm, int n, double *eprobs, uint32_t *sites)
     }
 
 
-    // Init all states with equal likelihood
     int i,j,k, nstates = hmm->nstates;
-    if ( hmm->init_probs )
-    {
-        for (i=0; i<nstates; i++) hmm->fwd[i] = hmm->init_probs[i];
-        for (i=0; i<nstates; i++) hmm->bwd[i] = hmm->init_probs[i];
-    }
-    else
-    {
-        for (i=0; i<nstates; i++) hmm->fwd[i] = 1./hmm->nstates;
-        for (i=0; i<nstates; i++) hmm->bwd[i] = 1./hmm->nstates;
-    }
+    memcpy(hmm->fwd, hmm->state.fwd_prob, sizeof(*hmm->state.fwd_prob)*nstates);
+    memcpy(hmm->bwd, hmm->state.bwd_prob, sizeof(*hmm->state.bwd_prob)*nstates);
+    uint32_t prev_pos = hmm->state.snap_at_pos ? hmm->state.snap_at_pos : sites[0];
 
-    // Run fwd 
-    uint32_t prev_pos = sites[0];
+    // Run fwd
     for (i=0; i<n; i++)
     {
         double *fwd_prev = &hmm->fwd[i*nstates];
@@ -259,6 +392,16 @@ void hmm_run_fwd_bwd(hmm_t *hmm, int n, double *eprobs, uint32_t *sites)
             norm += fwd[j];
         }
         for (j=0; j<nstates; j++) fwd[j] /= norm;
+
+        if ( hmm->debug_fh )
+        {
+            fprintf(hmm->debug_fh,"fwd\t%d",i);
+            for (j=0; j<nstates; j++) fprintf(hmm->debug_fh,"\t%f",fwd[j]);
+            fprintf(hmm->debug_fh,"\n");
+        }
+
+        if ( hmm->snapshot && sites[i]==hmm->snapshot->snap_at_pos )
+            memcpy(hmm->snapshot->fwd_prob, fwd, sizeof(*fwd)*nstates);
     }
 
     // Run bwd
@@ -266,9 +409,9 @@ void hmm_run_fwd_bwd(hmm_t *hmm, int n, double *eprobs, uint32_t *sites)
     prev_pos = sites[n-1];
     for (i=0; i<n; i++)
     {
-        double *fwd   = &hmm->fwd[(n-i)*nstates];
+        double *fwd   = &hmm->fwd[(n-i)*nstates];       // the size of the fwd array is n+1
         double *eprob = &eprobs[(n-i-1)*nstates];
-        
+
         int pos_diff = sites[n-i-1] == prev_pos ? 0 : prev_pos - sites[n-i-1] - 1;
 
         _set_tprob(hmm, pos_diff);
@@ -288,15 +431,26 @@ void hmm_run_fwd_bwd(hmm_t *hmm, int n, double *eprobs, uint32_t *sites)
         for (j=0; j<nstates; j++)
         {
             bwd_tmp[j] /= bwd_norm;
-            fwd[j] *= bwd_tmp[j];   // fwd now stores fwd*bwd
+            fwd[j] *= bwd[j];   // fwd now stores fwd*bwd
             norm += fwd[j];
         }
         for (j=0; j<nstates; j++) fwd[j] /= norm;
+
+        if ( hmm->debug_fh )
+        {
+            fprintf(hmm->debug_fh,"bwd\t%d",n-i-1);
+            for (j=0; j<nstates; j++) fprintf(hmm->debug_fh,"\t%f",bwd[j]);
+            fprintf(hmm->debug_fh,"\n");
+
+            fprintf(hmm->debug_fh,"fwd_bwd\t%d",i);
+            for (j=0; j<nstates; j++) fprintf(hmm->debug_fh,"\t%f",fwd[j]);
+            fprintf(hmm->debug_fh,"\n");
+        }
         double *tmp = bwd_tmp; bwd_tmp = bwd; bwd = tmp;
     }
 }
 
-void hmm_run_baum_welch(hmm_t *hmm, int n, double *eprobs, uint32_t *sites)
+double *hmm_run_baum_welch(hmm_t *hmm, int n, double *eprobs, uint32_t *sites)
 {
     // Init arrays when run for the first time
     if ( hmm->nfwd < n )
@@ -312,24 +466,16 @@ void hmm_run_baum_welch(hmm_t *hmm, int n, double *eprobs, uint32_t *sites)
 
     // Init all states with equal likelihood
     int i,j,k, nstates = hmm->nstates;
-    if ( hmm->init_probs )
-    {
-        for (i=0; i<nstates; i++) hmm->fwd[i] = hmm->init_probs[i];
-        for (i=0; i<nstates; i++) hmm->bwd[i] = hmm->init_probs[i];
-    }
-    else
-    {
-        for (i=0; i<nstates; i++) hmm->fwd[i] = 1./hmm->nstates;
-        for (i=0; i<nstates; i++) hmm->bwd[i] = 1./hmm->nstates;
-    }
+    memcpy(hmm->fwd, hmm->state.fwd_prob, sizeof(*hmm->state.fwd_prob)*nstates);
+    memcpy(hmm->bwd, hmm->state.bwd_prob, sizeof(*hmm->state.bwd_prob)*nstates);
+    uint32_t prev_pos = hmm->state.snap_at_pos ? hmm->state.snap_at_pos : sites[0];
 
     // New transition matrix: temporary values
     double *tmp_xi = (double*) calloc(nstates*nstates,sizeof(double));
     double *tmp_gamma = (double*) calloc(nstates,sizeof(double));
     double *fwd_bwd = (double*) malloc(sizeof(double)*nstates);
 
-    // Run fwd 
-    uint32_t prev_pos = sites[0];
+    // Run fwd
     for (i=0; i<n; i++)
     {
         double *fwd_prev = &hmm->fwd[i*nstates];
@@ -361,7 +507,7 @@ void hmm_run_baum_welch(hmm_t *hmm, int n, double *eprobs, uint32_t *sites)
     {
         double *fwd   = &hmm->fwd[(n-i)*nstates];
         double *eprob = &eprobs[(n-i-1)*nstates];
-        
+
         int pos_diff = sites[n-i-1] == prev_pos ? 0 : prev_pos - sites[n-i-1] - 1;
 
         _set_tprob(hmm, pos_diff);
@@ -384,7 +530,7 @@ void hmm_run_baum_welch(hmm_t *hmm, int n, double *eprobs, uint32_t *sites)
             fwd_bwd[j] = fwd[j]*bwd_tmp[j];
             norm += fwd_bwd[j];
         }
-        for (j=0; j<nstates; j++) 
+        for (j=0; j<nstates; j++)
         {
             fwd_bwd[j] /= norm;
             tmp_gamma[j] += fwd_bwd[j];
@@ -416,11 +562,17 @@ void hmm_run_baum_welch(hmm_t *hmm, int n, double *eprobs, uint32_t *sites)
     free(tmp_gamma);
     free(tmp_xi);
     free(fwd_bwd);
+    return hmm->curr_tprob;
 }
 
 void hmm_destroy(hmm_t *hmm)
 {
-    free(hmm->init_probs);
+    free(hmm->init.vit_prob);
+    free(hmm->init.fwd_prob);
+    free(hmm->init.bwd_prob);
+    free(hmm->state.vit_prob);
+    free(hmm->state.fwd_prob);
+    free(hmm->state.bwd_prob);
     free(hmm->vprob);
     free(hmm->vprob_tmp);
     free(hmm->vpath);

@@ -4,18 +4,42 @@
 Installing pysam
 ================
 
+Pysam can be installed through conda_, PyPI_ and from the repository.
+The recommended way to install pysam is through conda/bioconda.
+
+Conda installation
+==================
+
+To install pysam in your current conda_ environment, type::
+
+   conda config --add channels bioconda
+   conda config --add channels conda-forge
+   conda install pysam
+
+This will install pysam from the bioconda_ channel and automatically
+makes sure that dependencies are installed. Also, compilation flags
+will be set automatically, which will potentially save a lot of
+trouble on OS X.
+
+PyPI installation
+=================
+
 Pysam provides a python interface to the functionality contained
 within the htslib_ C library. There are two ways that these two
 can be combined, ``builtin`` and ``external``.
 
 Builtin
-=======
+-------
 
-The typical installation will be through pypi_::
+The typical installation will be through PyPI_::
 
    pip install pysam
 
-This will compile the ``builtin`` htslib source code within pysam.
+Generally you will have the ``wheel`` package installed and
+this command will speedily install pysam from a pre-built wheel.
+Otherwise, or if you use pip's ``--no-binary`` option, this will
+compile the ``builtin`` htslib source code within pysam and allow
+the configuration facilities described below to be used.
 
 htslib_ can be configured at compilation to turn on additional
 features such support using encrypted configurations, enable plugins,
@@ -26,7 +50,7 @@ features. If these fail, for example due to missing library
 dependencies (`libcurl`, `libcrypto`), it will fall back to
 conservative defaults.
 
-Options can be passed to the configure script explicitely by
+Options can be passed to the configure script explicitly by
 setting the environment variable `HTSLIB_CONFIGURE_OPTIONS`.
 For example::
 
@@ -34,7 +58,7 @@ For example::
   pip install pysam
 
 External
-========
+--------
 
 pysam can be combined with an externally installed htslib_
 library. This is a good way to avoid duplication of libraries. To link
@@ -49,12 +73,48 @@ Note that the location of the file :file:`libhts.so` needs to be known
 to the linker once you run pysam, for example by setting the
 environment-varirable `LD_LIBRARY_PATH`.
 
-cython
-======
+Note that generally the pysam and htslib version need to be
+compatible. See the release notes for more information.
+
+Installation from repository
+============================
 
 pysam depends on cython_ to provide the connectivity to the htslib_ C
 library. The installation of the source tarball (:file:`.tar.gz`)
-python 2.7 contains pre-built C-files and cython needs not be present
-during installation. However, when installing the source tarball on
-python 3 or building from the repository, these pre-built C-files are
-not present and cython needs to be installed beforehand.
+contains pre-built C-files and cython needs not be present
+during installation. However, when installing from the repository,
+cython needs to be installed beforehand.
+
+To install from repository, type::
+
+    python setup.py install
+
+For compilation options, see the section on PyPI installation above.
+
+Requirements
+============
+
+Depending on the installation method, requirements for building pysam differ.
+
+When installing through conda_, dependencies will be resolved by the
+package manager. The pip_ installation and installation from source
+require a C compiler and its standard libraries as well as all
+requirements for building htslib. Htslib requirements are listed in
+the htslib/INSTALL file.
+
+Installing from the repository will require cython_ to be installed.
+
+.. _pysam-profile:
+
+Profiling
+=========
+
+Pysam's Cython code is no longer built with Python profiling enabled by default.
+Profiling can be enabled when building it yourself from source by setting the
+environment variable `PYSAM_PROFILE`, for example::
+
+    export PYSAM_PROFILE=1
+    pip install --no-binary pysam pysam
+
+Note that when installing via pip you will need to use ``--no-binary pysam`` to
+ensure pip does not simply install a pre-built wheel.

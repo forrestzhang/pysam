@@ -1,24 +1,30 @@
 import os
-import sys
 import sysconfig
 
 from pysam.libchtslib import *
-from pysam.cutils import *
-import pysam.cutils as cutils
-import pysam.cfaidx as cfaidx
-from pysam.cfaidx import *
-import pysam.ctabix as ctabix
-from pysam.ctabix import *
-import pysam.csamfile as csamfile
-from pysam.csamfile import *
-import pysam.calignmentfile as calignmentfile
-from pysam.calignmentfile import *
-import pysam.calignedsegment as calignedsegment
-from pysam.calignedsegment import *
-import pysam.cvcf as cvcf
-from pysam.cvcf import *
-import pysam.cbcf as cbcf
-from pysam.cbcf import *
+import pysam.libchtslib as libchtslib
+from pysam.libcsamtools import *
+from pysam.libcbcftools import *
+from pysam.libcutils import *
+import pysam.libcutils as libcutils
+import pysam.libcfaidx as libcfaidx
+from pysam.libcfaidx import *
+import pysam.libctabix as libctabix
+from pysam.libctabix import *
+import pysam.libctabixproxies as libctabixproxies
+from pysam.libctabixproxies import *
+import pysam.libcsamfile as libcsamfile
+from pysam.libcsamfile import *
+import pysam.libcalignmentfile as libcalignmentfile
+from pysam.libcalignmentfile import *
+import pysam.libcalignedsegment as libcalignedsegment
+from pysam.libcalignedsegment import *
+import pysam.libcvcf as libcvcf
+from pysam.libcvcf import *
+import pysam.libcbcf as libcbcf
+from pysam.libcbcf import *
+import pysam.libcbgzf as libcbgzf
+from pysam.libcbgzf import *
 from pysam.utils import SamtoolsError
 import pysam.Pileup as Pileup
 from pysam.samtools import *
@@ -26,19 +32,21 @@ import pysam.config
 
 
 # export all the symbols from separate modules
-__all__ = \
-    libchtslib.__all__ +\
-    cutils.__all__ +\
-    ctabix.__all__ +\
-    cvcf.__all__ +\
-    cbcf.__all__ +\
-    cfaidx.__all__ +\
-    calignmentfile.__all__ +\
-    calignedsegment.__all__ +\
-    csamfile.__all__ +\
-    ["SamtoolsError"] +\
+__all__ = (
+    libchtslib.__all__ +  # type: ignore
+    libcutils.__all__ +  # type: ignore
+    libctabix.__all__ +  # type: ignore
+    libcvcf.__all__ +  # type: ignore
+    libcbcf.__all__ +  # type: ignore
+    libcbgzf.__all__ +  # type: ignore
+    libcfaidx.__all__ +  # type: ignore
+    libctabixproxies.__all__ +  # type: ignore
+    libcalignmentfile.__all__ +  # type: ignore
+    libcalignedsegment.__all__ +  # type: ignore
+    libcsamfile.__all__ +  # type: ignore
+    ["SamtoolsError"] +
     ["Pileup"]
-
+)
 from pysam.version import __version__, __samtools_version__
 
 
@@ -69,31 +77,24 @@ def get_include():
 
 def get_defines():
     '''return a list of defined compilation parameters.'''
-    return [] #('_FILE_OFFSET_BITS', '64'),
+    # ('_FILE_OFFSET_BITS', '64'),
     # ('_USE_KNETFILE', '')]
+    return []
 
 
 def get_libraries():
     '''return a list of libraries to link against.'''
-    # Note that this list does not include csamtools.so as there are
+    # Note that this list does not include libcsamtools.so as there are
     # numerous name conflicts with libchtslib.so.
     dirname = os.path.abspath(os.path.join(os.path.dirname(__file__)))
-    pysam_libs = ['ctabixproxies',
-                  'cfaidx',
-                  'csamfile',
-                  'cvcf',
-                  'cbcf',
-                  'ctabix']
+    pysam_libs = ['libctabixproxies',
+                  'libcfaidx',
+                  'libcsamfile',
+                  'libcvcf',
+                  'libcbcf',
+                  'libctabix']
     if pysam.config.HTSLIB == "builtin":
         pysam_libs.append('libchtslib')
 
-    if sys.version_info.major >= 3:
-        if sys.version_info.minor >= 5:
-            return [os.path.join(dirname, x + ".{}.so".format(
-                sysconfig.get_config_var('SOABI'))) for x in pysam_libs]
-        else:
-            return [os.path.join(dirname, x + ".{}{}.so".format(
-                sys.implementation.cache_tag,
-                sys.abiflags)) for x in pysam_libs]
-    else:
-        return [os.path.join(dirname, x + ".so") for x in pysam_libs]
+    so = sysconfig.get_config_var('EXT_SUFFIX')
+    return [os.path.join(dirname, x + so) for x in pysam_libs]

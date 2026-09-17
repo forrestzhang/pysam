@@ -1,4 +1,13 @@
-from pysam.cutils import _pysam_dispatch
+from typing import (
+    Callable,
+    List,
+    Optional,
+    Tuple,
+    Iterable,
+    Union,
+)
+
+from pysam.libcutils import _pysam_dispatch
 
 
 class SamtoolsError(Exception):
@@ -36,14 +45,20 @@ class PysamDispatcher(object):
     parsers = None
     collection = None
 
-    def __init__(self, collection, dispatch, parsers):
+    def __init__(
+        self,
+        collection: str,
+        dispatch: str,
+        parsers: Optional[Iterable[Tuple[str, Callable[[Union[str, List[str]]], Union[str, List[str]]]]]] = None,
+    ):
         self.collection = collection
         self.dispatch = dispatch
         self.parsers = parsers
         self.stderr = []
-        
-    def __call__(self, *args, **kwargs):
-        '''execute a samtools command.
+
+    def __call__(self, *args: str, **kwargs) -> Union[str, List[str]]:
+        '''
+        execute a samtools command.
 
         Keyword arguments:
         catch_stdout -- redirect stdout from the samtools command and
@@ -70,7 +85,7 @@ class PysamDispatcher(object):
                 "%s returned with error %i: "
                 "stdout=%s, stderr=%s" %
                 (self.collection,
-                 retval, 
+                 retval,
                  stdout,
                  stderr))
 
@@ -92,7 +107,20 @@ class PysamDispatcher(object):
 
     def usage(self):
         '''return the samtools usage information for this command'''
-        retval, stderr, stdout = csamtools._samtools_dispatch(
-            self.dispatch)
-        return stderr
+        retval, stderr, stdout = _pysam_dispatch(
+            self.collection,
+            self.dispatch,
+            is_usage=True,
+            catch_stdout=True)
+        # some tools write usage to stderr, such as mpileup
+        if stderr:
+            return stderr
+        else:
+            return stdout
 
+
+class unquoted_str(str):
+    '''Tag a value as an unquoted string. Meta-information in the VCF
+    header takes the form of key=value pairs. By default, pysam will
+    enclose the value in quotation marks. Tagging that value with
+    unquoted_str will prevent this quoting.'''

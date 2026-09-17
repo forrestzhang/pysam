@@ -1,6 +1,6 @@
 /*  vcmp.c -- reference allele utility functions.
 
-    Copyright (C) 2013 Genome Research Ltd.
+    Copyright (C) 2013-2015, 2018 Genome Research Ltd.
 
     Author: Petr Danecek <pd3@sanger.ac.uk>
 
@@ -26,15 +26,20 @@ THE SOFTWARE.  */
 #include <string.h>
 #include <stdlib.h>
 #include <htslib/hts.h>
+#include <htslib/vcf.h>
 #include <ctype.h>
 #include "vcmp.h"
+
+// Avoid having to include all of bcftools.h
+static inline char toupper_c(char c) { return toupper((unsigned char) c); }
 
 struct _vcmp_t
 {
     char *dref;
     int ndref, mdref;   // ndref: positive when ref1 longer, negative when ref2 is longer
     int nmatch;
-    int *map, mmap;
+    int *map, mmap, nmap;
+    int *map_dip, mmap_dip, nmap_dip;
 };
 
 vcmp_t *vcmp_init()
@@ -44,6 +49,7 @@ vcmp_t *vcmp_init()
 
 void vcmp_destroy(vcmp_t *vcmp)
 {
+    free(vcmp->map_dip);
     free(vcmp->map);
     free(vcmp->dref);
     free(vcmp);
@@ -54,7 +60,7 @@ int vcmp_set_ref(vcmp_t *vcmp, char *ref1, char *ref2)
     vcmp->ndref = 0;
 
     char *a = ref1, *b = ref2;
-    while ( *a && *b && toupper(*a)==toupper(*b) ) { a++; b++; }
+    while ( *a && *b && toupper_c(*a)==toupper_c(*b) ) { a++; b++; }
     if ( !*a && !*b ) return 0;
     if ( *a && *b ) return -1;  // refs not compatible
 
@@ -65,7 +71,7 @@ int vcmp_set_ref(vcmp_t *vcmp, char *ref1, char *ref2)
         while ( *a ) a++;
         vcmp->ndref = (a-ref1) - vcmp->nmatch;
         hts_expand(char,vcmp->ndref+1,vcmp->mdref,vcmp->dref);
-        for (i=0; i<vcmp->ndref; i++) vcmp->dref[i] = toupper(ref1[vcmp->nmatch+i]);
+        for (i=0; i<vcmp->ndref; i++) vcmp->dref[i] = toupper_c(ref1[vcmp->nmatch+i]);
         vcmp->dref[vcmp->ndref] = 0;
         return 0;
     }
@@ -75,7 +81,7 @@ int vcmp_set_ref(vcmp_t *vcmp, char *ref1, char *ref2)
     while ( *b ) b++;
     vcmp->ndref = (b-ref2) - vcmp->nmatch;
     hts_expand(char,vcmp->ndref+1,vcmp->mdref,vcmp->dref);
-    for (i=0; i<vcmp->ndref; i++) vcmp->dref[i] = toupper(ref2[vcmp->nmatch+i]);
+    for (i=0; i<vcmp->ndref; i++) vcmp->dref[i] = toupper_c(ref2[vcmp->nmatch+i]);
     vcmp->dref[vcmp->ndref] = 0;
     vcmp->ndref *= -1;
     return 0;
@@ -87,7 +93,7 @@ int vcmp_find_allele(vcmp_t *vcmp, char **als1, int nals1, char *al2)
     for (i=0; i<nals1; i++)
     {
         char *a = als1[i], *b = al2;
-        while ( *a && *b && toupper(*a)==toupper(*b) ) { a++; b++; }
+        while ( *a && *b && toupper_c(*a)==toupper_c(*b) ) { a++; b++; }
         if ( *a && *b ) continue;   // mismatch
         if ( !vcmp->ndref )
         {
@@ -100,14 +106,14 @@ int vcmp_find_allele(vcmp_t *vcmp, char **als1, int nals1, char *al2)
         {
             if ( vcmp->ndref<0 ) continue;
             for (j=0; j<vcmp->ndref; j++)
-                if ( !a[j] || toupper(a[j])!=vcmp->dref[j] ) break;
+                if ( !a[j] || toupper_c(a[j])!=vcmp->dref[j] ) break;
             if ( j!=vcmp->ndref || a[j] ) continue;
             break;  // found
         }
 
         if ( vcmp->ndref>0 ) continue;
         for (j=0; j<-vcmp->ndref; j++)
-            if ( !b[j] || toupper(b[j])!=vcmp->dref[j] ) break;
+            if ( !b[j] || toupper_c(b[j])!=vcmp->dref[j] ) break;
         if ( j!=-vcmp->ndref || b[j] ) continue;
         break;  // found
     }
@@ -120,7 +126,8 @@ int *vcmp_map_ARvalues(vcmp_t *vcmp, int n, int nals1, char **als1, int nals2, c
 {
     if ( vcmp_set_ref(vcmp,als1[0],als2[0]) < 0 ) return NULL;
 
-    vcmp->map = (int*) realloc(vcmp->map,sizeof(int)*n);
+    vcmp->nmap = n;
+    hts_expand(int, vcmp->nmap, vcmp->mmap, vcmp->map);
 
     int i, ifrom = n==nals2 ? 0 : 1;
     for (i=ifrom; i<nals2; i++)
@@ -129,4 +136,23 @@ int *vcmp_map_ARvalues(vcmp_t *vcmp, int n, int nals1, char **als1, int nals2, c
     }
     return vcmp->map;
 }
+
+int *vcmp_map_dipGvalues(vcmp_t *vcmp, int *nmap)
+{
+    vcmp->nmap_dip = vcmp->nmap*(vcmp->nmap+1)/2;
+    hts_expand(int, vcmp->nmap_dip, vcmp->mmap_dip, vcmp->map_dip);
+
+    int i, j, k = 0;
+    for (i=0; i<vcmp->nmap; i++)
+    {
+        for (j=0; j<=i; j++)
+        {
+            vcmp->map_dip[k] = vcmp->map[i]>=0 && vcmp->map[j]>=0 ? bcf_alleles2gt(vcmp->map[i],vcmp->map[j]) : -1;
+            k++;
+        }
+    }
+    *nmap = k;
+    return vcmp->map_dip;
+}
+
 

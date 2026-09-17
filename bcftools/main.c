@@ -1,6 +1,6 @@
 /*  main.c -- main bcftools command front-end.
 
-    Copyright (C) 2012-2016 Genome Research Ltd.
+    Copyright (C) 2012-2021 Genome Research Ltd.
 
     Author: Petr Danecek <pd3@sanger.ac.uk>
 
@@ -22,6 +22,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.  */
 
+#include "config.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -42,6 +43,7 @@ int main_vcfsom(int argc, char *argv[]);
 int main_vcfnorm(int argc, char *argv[]);
 int main_vcfgtcheck(int argc, char *argv[]);
 int main_vcfview(int argc, char *argv[]);
+int main_vcfhead(int argc, char *argv[]);
 int main_vcfcall(int argc, char *argv[]);
 int main_vcfannotate(int argc, char *argv[]);
 int main_vcfroh(int argc, char *argv[]);
@@ -52,8 +54,14 @@ int main_vcfcnv(int argc, char *argv[]);
 #if USE_GPL
 int main_polysomy(int argc, char *argv[]);
 #endif
+#ifdef ENABLE_BCF_PLUGINS
 int main_plugin(int argc, char *argv[]);
+int count_plugins(void);
+#endif
 int main_consensus(int argc, char *argv[]);
+int main_csq(int argc, char *argv[]);
+int main_mpileup(int argc, char *argv[]);
+int main_sort(int argc, char *argv[]);
 
 typedef struct
 {
@@ -94,6 +102,10 @@ static cmd_t cmds[] =
       .alias = "convert",
       .help  = "convert VCF/BCF files to different formats and back"
     },
+    { .func  = main_vcfhead,
+      .alias = "head",
+      .help  = "view VCF/BCF file headers"
+    },
     { .func  = main_vcfisec,
       .alias = "isec",
       .help  = "intersections of VCF/BCF files"
@@ -106,10 +118,12 @@ static cmd_t cmds[] =
       .alias = "norm",
       .help  = "left-align and normalize indels"
     },
+#ifdef ENABLE_BCF_PLUGINS
     { .func  = main_plugin,
       .alias = "plugin",
       .help  = "user-defined plugins"
     },
+#endif
     { .func  = main_vcfquery,
       .alias = "query",
       .help  = "transform VCF/BCF into user-defined formats"
@@ -117,6 +131,10 @@ static cmd_t cmds[] =
     { .func  = main_reheader,
       .alias = "reheader",
       .help  = "modify VCF/BCF header, change sample names"
+    },
+    { .func  = main_sort,
+      .alias = "sort",
+      .help  = "sort VCF/BCF file"
     },
     { .func  = main_vcfview,
       .alias = "view",
@@ -140,6 +158,10 @@ static cmd_t cmds[] =
       .alias = "cnv",
       .help  = "HMM CNV calling"
     },
+    { .func  = main_csq,
+      .alias = "csq",
+      .help  = "call variation consequences"
+    },
     { .func  = main_vcffilter,
       .alias = "filter",
       .help  = "filter VCF/BCF files using fixed thresholds"
@@ -147,6 +169,10 @@ static cmd_t cmds[] =
     { .func  = main_vcfgtcheck,
       .alias = "gtcheck",
       .help  = "check sample concordance, detect sample swaps and contamination"
+    },
+    { .func  = main_mpileup,
+        .alias = "mpileup",
+        .help  = "multi-way pileup producing genotype likelihoods"
     },
 #if USE_GPL
     { .func  = main_polysomy,
@@ -205,6 +231,14 @@ static void usage(FILE *fp)
         if ( cmds[i].func && cmds[i].help[0]!='-' ) fprintf(fp, "    %-12s %s\n", cmds[i].alias, cmds[i].help);
         i++;
     }
+#if ENABLE_BCF_PLUGINS
+    fprintf(fp,"\n -- Plugins (collection of programs for calling, file manipulation & analysis)\n");
+    int nplugins = count_plugins();
+    if ( nplugins )
+        fprintf(fp,"    %d plugins available, run \"bcftools plugin -lv\" to see a complete list\n", nplugins);
+    else
+        fprintf(fp,"    0 plugins available, run \"bcftools plugin -l\" for help\n");
+#endif
     fprintf(fp,"\n");
     fprintf(fp,
             " Most commands accept VCF, bgzipped VCF, and BCF with the file type detected\n"
@@ -214,12 +248,24 @@ static void usage(FILE *fp)
     fprintf(fp,"\n");
 }
 
+// This is a tricky one, but on Windows the filename wildcard expansion is done by
+// the application and not by the shell, as traditionally it never had a "shell".
+// Even now, DOS and Powershell do not do this expansion (but bash does).
+//
+// This means that Mingw/Msys implements code before main() that takes e.g. "*" and
+// expands it up to a list of matching filenames.  This in turn breaks things like
+// specifying "*" as a region (all the unmapped reads).  We take a hard line here -
+// filename expansion is the task of the shell, not our application!
+#ifdef _WIN32
+int _CRT_glob = 0;
+#endif
+
 int main(int argc, char *argv[])
 {
     if (argc < 2) { usage(stderr); return 1; }
 
     if (strcmp(argv[1], "version") == 0 || strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0) {
-        printf("bcftools %s\nUsing htslib %s\nCopyright (C) 2016 Genome Research Ltd.\n", bcftools_version(), hts_version());
+        printf("bcftools %s\nUsing htslib %s\nCopyright (C) 2026 Genome Research Ltd.\n", bcftools_version(), hts_version());
 #if USE_GPL
         printf("License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>\n");
 #else
