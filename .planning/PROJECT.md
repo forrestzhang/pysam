@@ -61,7 +61,7 @@ Windows 用户能够 `pip install` 拿到 wheel 并正常使用 pysam 的全部�
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | 先 fork 分发 wheel，而非直接追求 PyPI 官方包 | PyPI 包名需上游配合；先在 fork 验证可降低协作不确定性 | — Pending |
-| 双工具链分阶段：先 MinGW-w64 后 MSVC | MinGW 最接近现有 GCC/autotools 流程、移植阻力小；MSVC 是官方 wheel 生态原生路径 | — Pending |
+| 中间工具链路线：MinGW/UCRT64 仅作开发验证工具，wheel 只发 MSVC | MinGW 是 htslib 官方验证的 Windows 路径、最快到达"测试全绿"；MSVC 是官方 wheel 生态原生路径；兼顾快速验证与单一发布产物 | — Pending |
 | 全功能对等 + 完整测试套件作为成功标准 | 避免半移植状态难以界定"可用"；测试套件是客观验证依据 | — Pending |
 
 ## Evolution
