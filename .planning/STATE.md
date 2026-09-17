@@ -76,5 +76,5 @@ Items acknowledged and deferred at milestone close, most recent first:
 ## Session Continuity
 
 Last session: 2026-09-17
-Stopped at: ROADMAP.md / STATE.md 创建完成，等待 Phase 1 规划（/gsd-plan-phase 1）
-Resume file: None
+Stopped at: ROADMAP.md 审批门仍未响应（人类动作阻塞），会话已恢复
+Resume file: .continue-here.md (roadmap approval gate)
