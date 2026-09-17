@@ -28,7 +28,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. Windows 开发机上 `import pysam` 成功，能打开一个 BAM 文件并通过 `_pysam_dispatch` 运行一个 samtools/bcftools 命令
   3. `check_ext_symbol_conflicts` 在 Windows 上经 llvm-nm 实际运行，检出重复符号时使构建失败（不再静默跳过）
   4. 现有 Linux/macOS 构建与 CI 保持绿色（零回归）
-**Plans**: TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — 基础设施：CRLF 归一化 + UCRT64 bootstrap 脚本 + smoke 门 + INSTALL Windows 章节
+- [ ] 01-02-PLAN.md — setup.py 七处外科手术式编辑：UCRT64 门、sh 前缀、llvm-nm 符号门、win32 分支重写、implib、devnull
+- [ ] 01-03-PLAN.md — 首次 UCRT64 全量构建 + smoke/BUILD-03 实证 + fork CI 零回归收口
 
 ### Phase 2: 可移植性加固与测试全绿
 **Goal**: 完整测试套件在 Windows 上通过，skip 数与 Linux 基线对账 — 功能对等的客观证据（PROJECT.md 成功标准）。
@@ -76,7 +81,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. MinGW-w64 构建系统 | 0/TBD | Not started | - |
+| 1. MinGW-w64 构建系统 | 0/3 | Not started | - |
 | 2. 可移植性加固与测试全绿 | 0/TBD | Not started | - |
 | 3. MSVC 构建系统 | 0/TBD | Not started | - |
 | 4. Windows CI 与 wheel 分发 | 0/TBD | Not started | - |
