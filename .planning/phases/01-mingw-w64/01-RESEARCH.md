@@ -523,17 +523,22 @@ python devtools/smoke_test.py
 | A7 | UCRT64 mingw-w64 may provide its own getopt.h/getopt_long (D-10's "no getopt_long" premise possibly outdated) | Pattern 6, Pitfall 12 | None — vendored getopt.c is harmless-if-redundant; verify opportunistically, keep per D-10 |
 | A8 | plain `pip install -e .` (with PEP 517 isolation) may not fetch mingw-compatible build deps from PyPI; `--no-build-isolation` with pacman deps is the safe canonical form | Standard Stack, Pattern (bootstrap) | If plain form works, the flag is merely redundant; docs use the flagged form regardless |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All three questions are resolved by planning: each has a designated resolution checkpoint in plan 01-03, so none remains open at execution start. Outcomes are recorded in the 01-03 SUMMARY at first build.
 
 1. **Does `sh configure` complete cleanly under UCRT64 with only `--disable-ref-cache --disable-libcurl`?**
    - What we know: htslib INSTALL documents the MSYS2 path and `make lib-static`; a prebuilt UCRT64 htslib package exists, proving feasibility [CITED: htslib INSTALL; packages.msys2.org htslib]; pysam already passes both flags.
    - What's unclear: exact config.h feature set produced (e.g. HAVE_LIBDEFLATE if not installed) and whether any htslib version-specific Windows patch is needed.
    - Recommendation: first-build task with log capture; the empty-config.h fallback (setup.py:534-541) exists but must NOT be hit in Phase 1.
+   - RESOLVED by: 01-03 Task 1 step 2 — the OQ1 first-build checkpoint (`sh configure` completes and htslib/config.h is a real configure product; the empty-config fallback path must not be hit), verified in Task 1 step 4 via `pysam.config.HTSLIB == builtin`.
 2. **Exact implib naming/link order on first build (A3/A4).**
    - Recommendation: planner sequences libchtslib → one downstream module → smoke as the earliest integration checkpoint.
+   - RESOLVED by: 01-03 Task 1 — the A3 checkpoint (`ls pysam/libchtslib.*.dll.a` must show the EXT_SUFFIX-derived lib-prefixed stub name; Task 1 verify + step 4), with the exact produced filename recorded in the SUMMARY.
 3. **Whether llvm-nm or toolchain GNU nm ends up as the BUILD-03 tool.**
    - What we know: requirement names llvm-nm; binutils nm is a fallback with identical `-g -P` surface.
    - Recommendation: llvm-nm primary (per BUILD-03), A2 checkpoint decides.
+   - RESOLVED by: planning decision — llvm-nm is primary per BUILD-03 (01-02 Task 2: `_nm_command()` returns `["llvm-nm", "-g", "-P"]` on win32; binutils `nm` stays the POSIX path and documented fallback), confirmed empirically by the A2 checkpoint in 01-03 Task 2 step 3.
 
 ## Environment Availability
 
