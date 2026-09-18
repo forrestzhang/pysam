@@ -48,6 +48,35 @@ IS_DARWIN = platform.system() == 'Darwin'
 log = logging.getLogger('pysam')
 
 
+# Official MSYS2 detection snippet (mingw sysconfig platform) plus an
+# MSYSTEM belt-and-braces check. POSIX platforms are never gated.
+def _is_ucrt64_python():
+    if os.name != 'nt':
+        return True
+    return (sysconfig.get_platform().startswith("mingw")
+            and os.environ.get("MSYSTEM") == "UCRT64")
+
+
+if not _is_ucrt64_python():
+    # Strict fail-fast outside UCRT64: this message mirrors, package for
+    # package, the PKGS list in devtools/msys2-bootstrap.sh.
+    sys.exit(
+        "pysam: Windows builds require the MSYS2 UCRT64 environment and its "
+        "pacman python. Open the UCRT64 shell and run "
+        "'sh devtools/msys2-bootstrap.sh' to provision it, then build inside "
+        "a UCRT64 venv (see INSTALL, section 'Windows (MSYS2 UCRT64)'). "
+        "Required pacman packages:\n"
+        "  mingw-w64-ucrt-x86_64-python\n"
+        "  mingw-w64-ucrt-x86_64-python-pip\n"
+        "  mingw-w64-ucrt-x86_64-python-setuptools\n"
+        "  mingw-w64-ucrt-x86_64-python-cython\n"
+        "  mingw-w64-ucrt-x86_64-toolchain\n"
+        "  mingw-w64-ucrt-x86_64-llvm-tools\n"
+        "  mingw-w64-ucrt-x86_64-zlib\n"
+        "  mingw-w64-ucrt-x86_64-bzip2\n"
+        "  mingw-w64-ucrt-x86_64-xz\n")
+
+
 @contextmanager
 def changedir(path):
     save_dir = os.getcwd()
@@ -62,9 +91,12 @@ def run_configure(option):
     sys.stdout.flush()
     try:
         # Always disable ref-cache as its code is omitted from pysam's htslib/
-        retcode = subprocess.call(
-            " ".join(("./configure", "--disable-ref-cache", option)),
-            shell=True)
+        configure_cmd = " ".join(("./configure", "--disable-ref-cache", option))
+        if sys.platform == 'win32':
+            # shell=True spawns cmd.exe on Windows; the configure script is
+            # POSIX shell, so run it explicitly through the MSYS2 sh.
+            configure_cmd = "sh " + configure_cmd
+        retcode = subprocess.call(configure_cmd, shell=True)
         if retcode != 0:
             return False
         else:
@@ -416,6 +448,10 @@ class cy_build_ext(build_ext):
                                     '-Wl,-headerpad_max_install_names',
                                     f'-Wl,-install_name,{library_path}',
                                     '-Wl,-x']
+        elif sys.platform == 'win32':
+            # PE binaries have no ELF rpath; only ensure the flag list exists.
+            if not ext.extra_link_args:
+                ext.extra_link_args = []
         else:
             if not ext.extra_link_args:
                 ext.extra_link_args = []
