@@ -32,12 +32,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. `check_ext_symbol_conflicts` 在 Windows 上经 llvm-nm 实际运行，检出重复符号时使构建失败（不再静默跳过）
   4. 现有 Linux/macOS 构建与 CI 保持绿色（零回归）
 
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 01-01-PLAN.md — 基础设施：CRLF 归一化 + UCRT64 bootstrap 脚本 + smoke 门 + INSTALL Windows 章节
+- [x] 01-01-PLAN.md — 基础设施：CRLF 归一化 + UCRT64 bootstrap 脚本 + smoke 门 + INSTALL Windows 章节
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -103,7 +103,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. MinGW-w64 构建系统 | 0/3 | Not started | - |
+| 1. MinGW-w64 构建系统 | 1/3 | In Progress|  |
 | 2. 可移植性加固与测试全绿 | 0/TBD | Not started | - |
 | 3. MSVC 构建系统 | 0/TBD | Not started | - |
 | 4. Windows CI 与 wheel 分发 | 0/TBD | Not started | - |
