@@ -150,7 +150,9 @@ struct option
    errors, only prototype getopt for the GNU C library.  */
 extern int getopt (int ___argc, char *const *___argv, const char *__shortopts);
 # else /* not __GNU_LIBRARY__ */
-extern int getopt ();
+/* Full prototype: C23 (GCC 14+) reads the old K&R form as (void), which
+   then rejects every getopt (argc, argv, optstring) call.  */
+extern int getopt (int ___argc, char *const *___argv, const char *__shortopts);
 # endif /* __GNU_LIBRARY__ */
 
 # ifndef __need_getopt

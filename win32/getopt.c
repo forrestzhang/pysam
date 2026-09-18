@@ -41,6 +41,12 @@
 
 #include <stdio.h>
 
+/* C23 (GCC 14+) makes implicit function declarations a hard error.  The
+   non-glibc path below never included the standard headers that declare
+   getenv/malloc and the str* routines used throughout this file. */
+#include <stdlib.h>
+#include <string.h>
+
 /* Comment out all this code if we are using the GNU C Library, and are not
    actually compiling the library itself.  This code is part of the GNU C
    Library, but also included in many other GNU distributions.  Compiling
@@ -214,7 +220,8 @@ static char *posixly_correct;
    whose names are inconsistent.  */
 
 #ifndef getenv
-extern char *getenv ();
+/* stdlib.h (included above) provides the getenv prototype; the old
+   K&R form reads as (void) under C23 and conflicts with it.  */
 #endif
 
 static char *
