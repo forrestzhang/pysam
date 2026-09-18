@@ -93,10 +93,14 @@ def run_configure(option):
         # Always disable ref-cache as its code is omitted from pysam's htslib/
         configure_cmd = " ".join(("./configure", "--disable-ref-cache", option))
         if sys.platform == 'win32':
-            # shell=True spawns cmd.exe on Windows; the configure script is
-            # POSIX shell, so run it explicitly through the MSYS2 sh.
-            configure_cmd = "sh " + configure_cmd
-        retcode = subprocess.call(configure_cmd, shell=True)
+            # Run the POSIX configure script through the MSYS2 sh. Spawn it
+            # via ["sh", "-c", ...] rather than shell=True: shell=True goes
+            # through cmd.exe, whose machine-global AutoRun hooks (e.g.
+            # conda's) can break every cmd /c invocation on a developer
+            # machine.
+            retcode = subprocess.call(["sh", "-c", configure_cmd])
+        else:
+            retcode = subprocess.call(configure_cmd, shell=True)
         if retcode != 0:
             return False
         else:

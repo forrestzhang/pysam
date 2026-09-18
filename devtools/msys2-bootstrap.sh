@@ -64,6 +64,11 @@ if ! command -v llvm-nm >/dev/null 2>&1; then
 fi
 llvm-nm --version
 
+# The UCRT64 make package installs mingw32-make.exe only (no make.exe);
+# setup.py's make invocations honor $MAKE.
+MAKE=mingw32-make
+export MAKE
+
 # Remote I/O (libcurl/S3/GCS) stays disabled on Windows in v1 (REMOTE-01
 # deferred to v2); htslib is configured accordingly.
 HTSLIB_CONFIGURE_OPTIONS="--disable-libcurl"
