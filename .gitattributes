@@ -8,3 +8,13 @@ samtools/**                 linguist-vendored
 samtools/samtools.pysam.*  -linguist-vendored
 bcftools/**                 linguist-vendored
 bcftools/bcftools.pysam.*  -linguist-vendored
+
+# Force LF eol for the bundled sources and scripts: CRLF checkouts break
+# `sh configure` and `make` on Windows (core.autocrlf=true would otherwise
+# mangle them at checkout). Binaries inside these trees are untouched
+# (bare `text` = git auto-detection).
+htslib/**                   text eol=lf
+samtools/**                 text eol=lf
+bcftools/**                 text eol=lf
+*.sh                        text eol=lf
+*.pyx                       text eol=lf
