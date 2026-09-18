@@ -1186,6 +1186,29 @@ getopt (argc, argv, optstring)
                            0);
 }
 
+/* Long-option wrappers: the 2013 upstream file shipped only the bare
+   getopt entry point.  Without these, every getopt_long reference in
+   the bundled samtools/bcftools code falls through to libmingwex's
+   getopt.o, whose static member drags in a second copy of getopt and
+   collides with this one (multiple definition at link time, and two
+   live optind states at run time).  */
+
+int
+getopt_long (int argc, char *const *argv, const char *optstring,
+             const struct option *long_options, int *opt_index)
+{
+  return _getopt_internal (argc, argv, optstring,
+                           long_options, opt_index, 0);
+}
+
+int
+getopt_long_only (int argc, char *const *argv, const char *optstring,
+                  const struct option *long_options, int *opt_index)
+{
+  return _getopt_internal (argc, argv, optstring,
+                           long_options, opt_index, 1);
+}
+
 #endif  /* Not ELIDE_CODE.  */
 
 
