@@ -69,7 +69,7 @@ if not _is_ucrt64_python():
         "  mingw-w64-ucrt-x86_64-python\n"
         "  mingw-w64-ucrt-x86_64-python-pip\n"
         "  mingw-w64-ucrt-x86_64-python-setuptools\n"
-        "  mingw-w64-ucrt-x86_64-python-cython\n"
+        "  mingw-w64-ucrt-x86_64-cython\n"
         "  mingw-w64-ucrt-x86_64-toolchain\n"
         "  mingw-w64-ucrt-x86_64-llvm-tools\n"
         "  mingw-w64-ucrt-x86_64-zlib\n"

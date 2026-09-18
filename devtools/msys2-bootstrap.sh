@@ -20,7 +20,7 @@
 # prerequisites; setup.py's UCRT64 fail-fast message mirrors it verbatim
 # (D-03 + D-13).
 
-PKGS='mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-python-pip mingw-w64-ucrt-x86_64-python-setuptools mingw-w64-ucrt-x86_64-python-cython mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-llvm-tools mingw-w64-ucrt-x86_64-zlib mingw-w64-ucrt-x86_64-bzip2 mingw-w64-ucrt-x86_64-xz'
+PKGS='mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-python-pip mingw-w64-ucrt-x86_64-python-setuptools mingw-w64-ucrt-x86_64-cython mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-llvm-tools mingw-w64-ucrt-x86_64-zlib mingw-w64-ucrt-x86_64-bzip2 mingw-w64-ucrt-x86_64-xz'
 
 # Gate: run inside the UCRT64 shell only (analog of the POSIX
 # install-prerequisites.sh detection chain).
