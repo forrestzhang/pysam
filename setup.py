@@ -487,6 +487,12 @@ class cy_build_ext(build_ext):
             implib = os.path.join(
                 "pysam",
                 os.path.splitext(mod + suffix)[0] + ".dll.a")
+            # distutils hands the linker a .def file naming only PyInit_*,
+            # which suppresses PE auto-export; later extensions resolve
+            # dispatch/htslib symbols through this module's import library,
+            # so export everything (the ELF default the POSIX build relies
+            # on).
+            ext.extra_link_args.append("-Wl,--export-all-symbols")
             ext.extra_link_args.append("-Wl,--out-implib," + implib)
         else:
             if not ext.extra_link_args:
