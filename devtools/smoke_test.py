@@ -16,6 +16,7 @@ import sys
 import tempfile
 
 import pysam
+import pysam.bcftools  # not re-exported by pysam/__init__.py (upstream convention)
 
 
 def _step(message):
@@ -27,21 +28,36 @@ def main():
     # data is found regardless of the invocation cwd.
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     datadir = os.path.join(repo, "tests", "pysam_data")
-    sam_path = os.path.join(datadir, "ex1.sam.gz")
+    # A SAM input with a real header: the bundled htslib rejects headerless
+    # SAM at the first mapped record ("no SQ lines present"), and the old
+    # choice ex1.sam.gz is headerless by design.
+    sam_path = os.path.join(datadir, "test_mapped_unmapped.sam")
     vcf_path = os.path.join(datadir, "ex1.vcf.gz")
 
     with tempfile.TemporaryDirectory() as tmp:
         # Step 1: samtools dispatch -- generate a BAM from the committed
-        # gzipped SAM test data (exercises the _pysam_dispatch plumbing).
-        _step("1/4 samtools view -b: generate BAM from ex1.sam.gz")
+        # test data (exercises the _pysam_dispatch plumbing).
+        # catch_stdout=False matters: with the default capture the
+        # dispatcher appends its own "-o <tempfile>" AFTER the user's args
+        # (pysam/libcutils.pyx), which silently shadows the "-o bam" pair
+        # and the BAM bytes are returned instead of written to `bam`.
+        # Disabling the capture lets samtools' own -o write the file.
+        _step("1/4 samtools view -b: generate BAM from test_mapped_unmapped.sam")
         bam = os.path.join(tmp, "ex1.bam")
-        pysam.samtools.view("-b", "-o", bam, sam_path)
+        pysam.samtools.view("-b", "-o", bam, sam_path, catch_stdout=False)
 
-        # Step 2: byte-level verification of the produced file.
-        _step("2/4 verify BAM magic bytes")
+        # Step 2: byte-level verification of the produced file. A BAM file
+        # is BGZF-compressed, so the on-disk magic is the gzip/BGZF header
+        # (1f 8b 08 + FEXTRA flag with the "BC" subfield); the raw
+        # b"BAM\x01" magic only exists in the decompressed payload, which
+        # step 3 validates by opening the file with htslib itself.
+        _step("2/4 verify BGZF magic bytes")
         with open(bam, "rb") as fh:
-            magic = fh.read(4)
-        assert magic == b"BAM\x01", "not a BAM/BGZF file: %r" % (magic,)
+            head = fh.read(18)
+        assert head[:4] == b"\x1f\x8b\x08\x04", \
+            "not a gzip/BGZF file: %r" % (head[:4],)
+        assert head[12:14] == b"BC", \
+            "gzip file but not BGZF (no BC extra subfield): %r" % (head,)
 
         # Step 3: read the BAM back through the htslib bindings.
         _step("3/4 AlignmentFile fetch (until_eof=True)")
