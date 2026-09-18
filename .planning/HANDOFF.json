@@ -1,0 +1,37 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-09-18T14:20:41.428Z",
+  "phase": "01",
+  "phase_name": "MinGW-w64 构建系统",
+  "phase_dir": ".planning/phases/01-mingw-w64",
+  "plan": 3,
+  "task": 3,
+  "total_tasks": 3,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": 1, "name": "UCRT64 供给 + 首次完整构建（含 D-16 裁决落地、strip 门控修订、smoke 修复）", "status": "done", "commits": ["4c7f83d4", "87437211", "61b2d26a", "7e4e676f", "a50e71a4", "055a9ddb", "461a5bb5", "c7bd2adf", "5a8e2fee"]},
+    {"id": 2, "name": "smoke gate + BUILD-03 三重证明（no-skip grep / llvm-nm .dll.a / 探针 teeth+honesty）", "status": "done", "commit": "11d84800"},
+    {"id": 3, "name": "push + watch CI + 收尾（SUMMARY/STATE/ROADMAP/requirements/docs）", "status": "in_progress", "progress": "步骤 1-2 已完成：最终提交 0f326879 已推送 origin/win（本地 HEAD == origin/win == 0f326879），GitHub Actions CI 已在该 SHA 触发。步骤 3 阻塞于 gh CLI 认证门"}
+  ],
+  "remaining_tasks": [
+    {"id": 3, "name": "watch CI（gh）→ 绿：收尾提交（01-03-SUMMARY.md、STATE.md→completed_plans 3、ROADMAP、requirements/docs）；红：gh run view --log-failed → D-08 式修复 → re-push → re-watch", "status": "blocked_on_human"},
+    {"id": "phase-closeout", "name": "phase 01 收尾链（orchestrator）：post-merge gate（build+test）→ aggregate_results → code_review_gate（/gsd-code-review 01）→ verify_phase_goal（gsd-verifier）→ update_roadmap phase.complete → close_phase_todos → transition", "status": "not_started"}
+  ],
+  "blockers": [
+    {"description": "gh CLI 未认证，无法 watch CI（计划禁止跳过或近似 CI 验证）", "type": "human_action", "workaround": "无 — 用户在任意终端运行 gh auth login（GitHub.com → HTTPS → web browser 设备码流程）"}
+  ],
+  "async_jobs": [],
+  "human_actions_pending": [
+    {"action": "gh auth login（一次性）", "context": "Task 3 步骤 3 需要 gh run watch/view 验证 CI 在 0f326879 上全绿（Linux/macOS 零回归证据 = BUILD-01 验收依据）", "blocking": true}
+  ],
+  "decisions": [
+    {"decision": "授权自动安装 MSYS2 UCRT64（官方安装器、默认 C:\\msys64、pacman -Syu --noconfirm 首跑）", "rationale": "plan 01-03 Task 1 前置条件未满足，blocking-human 检查点经用户裁决", "phase": "01"},
+    {"decision": "D-16：getopt 族从 libchtslib 导出面剔除（--exclude-symbols），各工具扩展私有副本（隔离模型），BUILD-03 门控对 7 个已知良性符号（getopt/getopt_long/getopt_long_only/optarg/optind/opterr/optopt）加封闭的 win32 平台豁免", "rationale": "D-10 前提证伪：getopt 族在静态 libmingwex.a 中，PE 数据符号（optarg/optind）无法在归档扫描期经导入库解析，任何共享导出模型都会双重定义", "phase": "01"},
+    {"decision": "门控/探针读 .dll.a 导入库而非 .pyd", "rationale": "distutils 链接带 -s strip，.pyd 无可读符号表；A2 已验证 llvm-nm 可解析 PE 归档（用户明确未授权移除 -s）", "phase": "01"},
+    {"decision": "D-13 镜像同步：PKGS 清单 python-cython → cython", "rationale": "上游 MSYS2 包重命名", "phase": "01"},
+    {"decision": "configure 经 [\"sh\",\"-c\",...] 直连 + bootstrap 导出 MAKE=mingw32-make", "rationale": "本机 cmd.exe AutoRun/conda_hook 毒化所有 shell=True 调用；UCRT64 make 包只装 mingw32-make.exe", "phase": "01"}
+  ],
+  "uncommitted_files": [" M .planning/STATE.md", " M .planning/config.json", "?? .gsd/", "?? .planning/agent-history.json", "?? .planning/milestone.lock", "?? .planning/state.json"],
+  "next_action": "1) 用户 gh auth login；2) 验证 CI：gh run list --branch win --limit 1 --json databaseId,headSha（应 = 0f326879fb35e38728b71d506ec93ced52dbb416）→ gh run watch <id> --exit-status；3) 重新记录隔离哨兵（node \"$GSD_TOOLS\" query dispatch-isolation --raw --force-isolation none，Agent 调用不带 isolation 标志）；4) 全新 gsd-executor continuation dispatch（<continuation> 块：Task 1-2 已完成勿重跑，Task 3 步骤 3 起）",
+  "context_notes": "关键事实：01-03 有 11 个生产提交（4c7f83d4..0f326879）但无 SUMMARY — 这是已知的在途状态（executor 停在 Task 3 步骤 3 的 gh 认证门），不是非法部分状态；safe_resume_gate 不得误判。恢复时绝不要重跑构建 — 先核对产物（pysam/*.pyd 共 13 个、.dll.a 共 13 个）与 CI 状态。研究检查点已裁决：A1 ✓ / A3 ✓ / OQ1 ✓ / A4 ✓ / A2 有保留 ✓（读 .dll.a）。D-16 已实证：13 模块 1624 符号、0 重复、0 豁免命中。executor（agentId afb2d4aed6bd1155a）已随会话死亡 — 恢复必须用全新 continuation dispatch，不能 SendMessage。CI 在 GitHub 远端持续运行，不随暂停丢失。"
+}
