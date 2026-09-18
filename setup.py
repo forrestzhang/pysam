@@ -123,8 +123,18 @@ def run_make_print_config():
     return make_print_config
 
 
+def _nm_command():
+    # BUILD-03: the symbol gate is mandatory on Windows. GNU binutils nm is
+    # unavailable there, but llvm-nm ships with the UCRT64 llvm-tools
+    # package; -P makes it emit the same POSIX.2 format the parser below
+    # expects.
+    if sys.platform == 'win32':
+        return ["llvm-nm", "-g", "-P"]
+    return ["nm", "-g", "-P"]
+
+
 def run_nm_defined_symbols(objfile):
-    stdout = subprocess.check_output(["nm", "-g", "-P", objfile], encoding="ascii")
+    stdout = subprocess.check_output(_nm_command() + [objfile], encoding="ascii")
 
     def cython_internal(sym):
         offset = 1 if sym.startswith("___") else 0  # Skip extra underscore on macOS
@@ -390,13 +400,24 @@ class cy_build_ext(build_ext):
             os.environ['LDSHARED'] = ldshared.replace('-bundle', '')
 
         super().run()
-        try:
-            if HTSLIB_MODE != 'separate':
+        if sys.platform == 'win32':
+            # BUILD-03: the symbol check is mandatory on Windows and is never
+            # silently skipped — it runs outside the exception-swallowing
+            # wrapper below, so a missing or failing llvm-nm aborts the build.
+            if HTSLIB_MODE == 'separate':
+                log.warning(
+                    "symbol collision check not applicable: htslib is built "
+                    "separately into each extension (HTSLIB_MODE=separate)")
+            else:
                 self.check_ext_symbol_conflicts()
-        except OSError as e:
-            log.warning("skipping symbol collision check (invoking nm failed: %s)", e)
-        except subprocess.CalledProcessError:
-            log.warning("skipping symbol collision check (invoking nm failed)")
+        else:
+            try:
+                if HTSLIB_MODE != 'separate':
+                    self.check_ext_symbol_conflicts()
+            except OSError as e:
+                log.warning("skipping symbol collision check (invoking nm failed: %s)", e)
+            except subprocess.CalledProcessError:
+                log.warning("skipping symbol collision check (invoking nm failed)")
 
     def build_extensions(self):
         c99_flags = self.c99_compile_args()
@@ -452,6 +473,15 @@ class cy_build_ext(build_ext):
             # PE binaries have no ELF rpath; only ensure the flag list exists.
             if not ext.extra_link_args:
                 ext.extra_link_args = []
+            if ext.name == 'pysam.libchtslib':
+                # Emit an import library beside the built module so the other
+                # extensions' -l flags resolve through library_dirs (GNU ld
+                # searches for lib<name>.dll.a there). The stub name is
+                # derived from EXT_SUFFIX exactly like internal_htslib_libraries.
+                implib = os.path.join(
+                    "pysam",
+                    "lib" + os.path.splitext("chtslib" + suffix)[0] + ".dll.a")
+                ext.extra_link_args.append("-Wl,--out-implib," + implib)
         else:
             if not ext.extra_link_args:
                 ext.extra_link_args = []
@@ -666,10 +696,21 @@ for fn in config_headers:
                 "/* conservative compilation options */\n")
 
 #######################################################
-# Windows compatibility - untested
+# Windows (MSYS2 UCRT64) compatibility
 if platform.system() == 'Windows':
     include_os = ['win32']
+    # MinGW-w64 has no getopt_long: the vendored getopt implementation is
+    # compiled once, into pysam.libchtslib only (see the module list below),
+    # and every other module resolves getopt_long/opt* through that module's
+    # import library. UCRT64 GCC ships real unistd.h/stdint.h — the stale
+    # win32 shim headers were removed in favour of them (they lacked
+    # isatty/fileno and risked header shadowing).
     os_c_files = ['win32/getopt.c']
+    # bcftools/vcfsom.c calls random()/srandom() (lines 362 and 513) and the
+    # dropped shim header used to provide this mapping; MSVCRT provides
+    # rand()/srand(). Harmless if UCRT64 headers already declare the POSIX
+    # names; verified at the first UCRT64 build.
+    define_macros.extend([('random', 'rand'), ('srandom', 'srand')])
 else:
     include_os = []
     os_c_files = []
@@ -733,6 +774,10 @@ def prebuild_libcsamtools(ext, force):
 
 
 modules = [
+    # The vendored getopt implementation is compiled once, in this module:
+    # every other module resolves getopt_long/opt* through this module's
+    # import library (win32), which keeps the now-mandatory symbol conflict
+    # check free of legitimate duplicates.
     dict(name="pysam.libchtslib",
          prebuild_func=prebuild_libchtslib,
          sources=[source_pattern % "htslib", "pysam/htslib_util.c"] + dynamic_files + os_c_files,
@@ -741,51 +786,51 @@ modules = [
     dict(name="pysam.libcsamtools",
          prebuild_func=prebuild_libcsamtools,
          sources=[source_pattern % "samtools"] + glob.glob(os.path.join("samtools", "*.pysam.c")) +
-         [os.path.join("samtools", "lz4", "lz4.c")] + os_c_files,
+         [os.path.join("samtools", "lz4", "lz4.c")],
          extra_objects=separate_htslib_objects,
          libraries=external_htslib_libraries + internal_htslib_libraries),
     dict(name="pysam.libcbcftools",
-         sources=[source_pattern % "bcftools"] + glob.glob(os.path.join("bcftools", "*.pysam.c")) + os_c_files,
+         sources=[source_pattern % "bcftools"] + glob.glob(os.path.join("bcftools", "*.pysam.c")),
          extra_objects=separate_htslib_objects,
          libraries=external_htslib_libraries + internal_htslib_libraries),
     dict(name="pysam.libcutils",
-         sources=[source_pattern % "utils"] + os_c_files,
+         sources=[source_pattern % "utils"],
          extra_objects=separate_htslib_objects,
          libraries=external_htslib_libraries + internal_htslib_libraries + internal_samtools_libraries),
     dict(name="pysam.libcalignmentfile",
-         sources=[source_pattern % "alignmentfile"] + os_c_files,
+         sources=[source_pattern % "alignmentfile"],
          extra_objects=separate_htslib_objects,
          libraries=libraries_for_pysam_module),
     dict(name="pysam.libcsamfile",
-         sources=[source_pattern % "samfile"] + os_c_files,
+         sources=[source_pattern % "samfile"],
          extra_objects=separate_htslib_objects,
          libraries=libraries_for_pysam_module),
     dict(name="pysam.libcalignedsegment",
-         sources=[source_pattern % "alignedsegment"] + os_c_files,
+         sources=[source_pattern % "alignedsegment"],
          extra_objects=separate_htslib_objects,
          libraries=libraries_for_pysam_module),
     dict(name="pysam.libctabix",
-         sources=[source_pattern % "tabix"] + os_c_files,
+         sources=[source_pattern % "tabix"],
          extra_objects=separate_htslib_objects,
          libraries=libraries_for_pysam_module),
     dict(name="pysam.libcfaidx",
-         sources=[source_pattern % "faidx"] + os_c_files,
+         sources=[source_pattern % "faidx"],
          extra_objects=separate_htslib_objects,
          libraries=libraries_for_pysam_module),
     dict(name="pysam.libcbcf",
-         sources=[source_pattern % "bcf"] + os_c_files,
+         sources=[source_pattern % "bcf"],
          extra_objects=separate_htslib_objects,
          libraries=libraries_for_pysam_module),
     dict(name="pysam.libcbgzf",
-         sources=[source_pattern % "bgzf"] + os_c_files,
+         sources=[source_pattern % "bgzf"],
          extra_objects=separate_htslib_objects,
          libraries=libraries_for_pysam_module),
     dict(name="pysam.libctabixproxies",
-         sources=[source_pattern % "tabixproxies"] + os_c_files,
+         sources=[source_pattern % "tabixproxies"],
          extra_objects=separate_htslib_objects,
          libraries=libraries_for_pysam_module),
     dict(name="pysam.libcvcf",
-         sources=[source_pattern % "vcf"] + os_c_files,
+         sources=[source_pattern % "vcf"],
          extra_objects=separate_htslib_objects,
          libraries=libraries_for_pysam_module),
 ]
