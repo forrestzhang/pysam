@@ -479,15 +479,14 @@ class cy_build_ext(build_ext):
                 ext.extra_link_args = []
             # Emit an import library beside each built module so the other
             # extensions' -l flags resolve through library_dirs (GNU ld
-            # searches for lib<name>.dll.a there). The stub name is
-            # derived from EXT_SUFFIX exactly like internal_htslib_libraries;
-            # every lib* module can be a link-time dependency of a later
-            # extension (libcutils links csamtools/cbcftools, the feature
-            # modules link chtslib/csamtools/cbcftools/cutils).
+            # searches for lib<name>.dll.a there). Module names already
+            # carry the 'lib' prefix (libchtslib, libcsamtools, ...), so the
+            # stub name is the module + EXT_SUFFIX stem + .dll.a — exactly
+            # what '-l<name minus lib prefix>' expands to.
             mod = ext.name.rsplit('.', 1)[-1]
             implib = os.path.join(
                 "pysam",
-                "lib" + os.path.splitext(mod + suffix)[0] + ".dll.a")
+                os.path.splitext(mod + suffix)[0] + ".dll.a")
             ext.extra_link_args.append("-Wl,--out-implib," + implib)
         else:
             if not ext.extra_link_args:
