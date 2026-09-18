@@ -88,6 +88,41 @@ To install from repository, type::
 
 For compilation options, see the section on PyPI installation above.
 
+Windows (MSYS2 UCRT64)
+======================
+
+pysam can be built for development purposes on Windows inside the MSYS2
+UCRT64 environment. The build requires exactly two manual steps:
+
+1. Install MSYS2 from https://www.msys2.org/ using the official
+   installer, then open the **UCRT64** shell (not MINGW64) and let the
+   first ``pacman -Syu`` finish. Note that msvcrt-flavored MinGW
+   environments (the legacy MINGW64 shell) are unsupported: their
+   fd/heap ABI is incompatible with the UCRT runtime and silently
+   corrupts data.
+2. From the pysam checkout, run the bootstrap script in the UCRT64
+   shell::
+
+       sh devtools/msys2-bootstrap.sh
+
+   The script installs the nine required pacman toolchain and library
+   packages, creates a ``_venv`` virtual environment, builds pysam
+   into it and finishes with the committed smoke test gate
+   (``devtools/smoke_test.py``).
+
+The canonical one-command build, once ``_venv`` is activated, is::
+
+    pip install -e . --no-build-isolation
+
+Building with GCC against a python.org CPython installation is
+explicitly unsupported in v1; end-user Python support on Windows will
+be delivered by the upcoming MSVC build path.
+
+``HTSLIB_MODE`` must be unset or set to ``shared`` for the Windows
+build; the bootstrap script enforces this. Remote I/O (libcurl, S3 and
+GCS) is disabled on Windows in v1: the script configures htslib with
+``--disable-libcurl``.
+
 Requirements
 ============
 
