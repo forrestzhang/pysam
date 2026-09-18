@@ -163,7 +163,12 @@ def run_nm_defined_symbols(objfile):
 
     symbols = set()
     for line in stdout.splitlines():
-        (sym, symtype) = line.split()[:2]
+        fields = line.split()
+        if len(fields) < 2:
+            # archive member headers and blank lines (llvm-nm on a
+            # .dll.a import library prints "<member>.o:" separators)
+            continue
+        (sym, symtype) = fields[:2]
         if symtype not in "UFNWw" and not cython_internal(sym):
             if IS_DARWIN:
                 # On macOS, all symbols have a leading underscore
@@ -393,8 +398,25 @@ class cy_build_ext(build_ext):
         """
         symbols = dict()
         for ext in self.distribution.ext_modules:
-            for sym in run_nm_defined_symbols(self.get_ext_fullpath(ext.name)):
+            objfile = self.get_ext_fullpath(ext.name)
+            if sys.platform == 'win32':
+                # The built .pyd files are stripped (distutils links with
+                # -s), so their COFF symbol table is gone. Gate the module's
+                # EXPORT surface instead by reading the import library
+                # emitted beside it: cross-module binding can only happen
+                # through exports, making this the exact PE analogue of the
+                # POSIX gate reading .so dynamic symbols.
+                objfile = os.path.splitext(objfile)[0] + ".dll.a"
+            for sym in run_nm_defined_symbols(objfile):
                 symbols.setdefault(sym, []).append(ext.name.lstrip('pysam.'))
+
+        if sys.platform == 'win32' and not symbols:
+            # Never pass vacuously: if the built artifacts yield no
+            # parseable symbols, the gate saw nothing and must fail loudly.
+            raise LinkError(
+                "symbol gate read no symbols from the built binaries "
+                "(llvm-nm produced no parseable output for the import "
+                "libraries)")
 
         errors = 0
         for (sym, objs) in symbols.items():
