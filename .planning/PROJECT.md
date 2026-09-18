@@ -63,6 +63,7 @@ Windows 用户能够 `pip install` 拿到 wheel 并正常使用 pysam 的全部�
 | 先 fork 分发 wheel，而非直接追求 PyPI 官方包 | PyPI 包名需上游配合；先在 fork 验证可降低协作不确定性 | — Pending |
 | 中间工具链路线：MinGW/UCRT64 仅作开发验证工具，wheel 只发 MSVC | MinGW 是 htslib 官方验证的 Windows 路径、最快到达"测试全绿"；MSVC 是官方 wheel 生态原生路径；兼顾快速验证与单一发布产物 | — Pending |
 | 全功能对等 + 完整测试套件作为成功标准 | 避免半移植状态难以界定"可用"；测试套件是客观验证依据 | — Pending |
+| **D-16: getopt 族平台豁免（MinGW 隔离模型）** — libchtslib 不再导出 getopt 族（`--exclude-symbols`），各工具扩展持 mingwex 静态私有副本；BUILD-03 门控仅豁免封闭 7 符号集 {getopt, getopt_long, getopt_long_only, optarg, optind, opterr, optopt}，限 win32 路径 | D-10 前提被首次真实 UCRT64 构建证伪：getopt 族在静态 libmingwex.a 中，PE 数据导入缺口使共享设计必然多重定义；采用与 Windows 独立 samtools.exe/bcftools.exe 等价的隔离模型 | — Accepted（2026-09-18，plan 01-03 Task 1 人类裁决） |
 
 ## Evolution
 

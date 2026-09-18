@@ -34,7 +34,7 @@ NOT in this phase: MSVC toolchain (Phase 3), Windows CI runners and wheels (Phas
 ### setup.py change style
 - **D-08:** **Minimal inline diff philosophy**: small `sys.platform == 'win32'` / MSYSTEM-gated branches exactly where the POSIX pipeline breaks (configure/make invocation points, rpath flag, nm call). No restructuring of the 807-line monolith, no helper-module extraction. Keeps the diff upstreamable and the zero-regression review surface small.
 - **D-09:** The dead "untested" win32 branch at `setup.py:634` is **rewritten in place** — same insertion point, new working UCRT64 body. No parallel stale branch left behind.
-- **D-10:** From the 2013 `win32/` shims, **only `win32/getopt.c` survives** on the UCRT64 include path (MinGW-w64 has no getopt_long). `win32/unistd.h` and `win32/stdint.h` are dropped — UCRT64 GCC ships real ones, and the stale shim is missing `isatty`/`fileno` (W7). Phase researcher verifies per-shim during planning.
+- **D-10:** From the 2013 `win32/` shims, **only `win32/getopt.c` survives** on the UCRT64 include path (MinGW-w64 has no getopt_long — *premise falsified at the first real build; superseded by D-16 for the linking model*). `win32/unistd.h` and `win32/stdint.h` are dropped — UCRT64 GCC ships real ones, and the stale shim is missing `isatty`/`fileno` (W7). Phase researcher verifies per-shim during planning.
 
 ### POSIX regression guard
 - **D-11:** Linux/macOS zero-regression is verified by **fork CI on every push**: the `win` branch is pushed to the GitHub fork after each committed change; the existing `ci.yaml` ubuntu+macos jobs run automatically on push.
@@ -44,6 +44,9 @@ NOT in this phase: MSVC toolchain (Phase 3), Windows CI runners and wheels (Phas
 - **D-13:** Bootstrap deliverable is **script + docs**: a committed UCRT64 bootstrap script (pacman toolchain/library package list + venv creation + build deps; Windows counterpart to `devtools/install-prerequisites.sh`) plus an INSTALL Windows section documenting the two manual steps. The script is the single source of truth for the fail-fast message content.
 - **D-14:** The canonical documented one-step build command is **`pip install -e .`** inside the UCRT64 venv (exercises the PEP 517 path end to end). `setup.py build` remains functional but undocumented.
 - **D-15:** Division of labor: **MSYS2 itself is installed manually** (documented link, one GUI run); **the script owns everything after** (pacman packages, venv, build deps).
+
+### First real-build corrections (plan 03, human-approved)
+- **D-16:** The D-10 linking premise is **falsified**: MinGW's getopt family lives in the *static* libmingwex.a, and plain data references (optarg/optind) cannot resolve through a PE import library during archive scanning, so every extension pulls its own mingwex getopt copy regardless of who exports one — sharing win32/getopt.c via libchtslib's import library necessarily collides ("multiple definition of 'getopt'"). Adopted model = the isolation of separate samtools.exe/bcftools.exe on Windows: win32/getopt.c stays compiled into libchtslib (also needed for the Phase 3 MSVC path), the getopt family is **excluded from every win32 module's exports** (`-Wl,--exclude-symbols=`), each tool extension keeps a private mingwex copy, and the BUILD-03 gate exempts exactly the closed set {getopt, getopt_long, getopt_long_only, optarg, optind, opterr, optopt} on win32 — every other duplicate still fails the build. Human-approved checkpoint decision (2026-09-18).
 
 ### Claude's Discretion
 - Exact pacman package list contents (researcher/planner determine precise package names and versions).

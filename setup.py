@@ -127,6 +127,23 @@ def run_make_print_config():
     return make_print_config
 
 
+# D-14: MinGW's getopt family lives in the STATIC libmingwex.a, so every
+# extension that references getopt_long or the opt* variables links its own
+# private copy. The D-10 premise ("MinGW has no getopt_long, so share the
+# vendored win32/getopt.c through libchtslib's import library") is falsified:
+# plain data references (optarg/optind) cannot resolve through a PE import
+# library during archive scanning, so GNU ld pulls the mingwex member anyway
+# and the shared design collides ("multiple definition of 'getopt'").
+# The decided model mirrors separate samtools.exe / bcftools.exe on Windows:
+# each extension keeps its own getopt copy (never exported), and the
+# BUILD-03 gate exempts exactly this closed symbol set on win32. Every
+# other duplicate symbol still fails the build.
+WIN32_GETOPT_EXEMPT_SYMBOLS = frozenset([
+    "getopt", "getopt_long", "getopt_long_only",
+    "optarg", "optind", "opterr", "optopt",
+])
+
+
 def _nm_command():
     # BUILD-03: the symbol gate is mandatory on Windows. GNU binutils nm is
     # unavailable there, but llvm-nm ships with the UCRT64 llvm-tools
@@ -368,6 +385,11 @@ class cy_build_ext(build_ext):
         which can lead to crashes due to incorrect functions being invoked.
         Avoid by adding an appropriate #define to import/pysam.h or in
         unusual cases adding another rewrite rule to devtools/import.py.
+
+        D-14: on win32, exactly WIN32_GETOPT_EXEMPT_SYMBOLS may be
+        duplicated (private per-module getopt copies — MinGW links the
+        static libmingwex.a member into every extension that references
+        it). The exemption is closed: any other duplicate still fails.
         """
         symbols = dict()
         for ext in self.distribution.ext_modules:
@@ -377,6 +399,12 @@ class cy_build_ext(build_ext):
         errors = 0
         for (sym, objs) in symbols.items():
             if (len(objs) > 1):
+                if (sys.platform == 'win32'
+                        and sym in WIN32_GETOPT_EXEMPT_SYMBOLS):
+                    log.warning(
+                        "duplicate symbol exempted on win32 (D-14): %s in %s",
+                        sym, " ".join(objs))
+                    continue
                 log.error("conflicting symbol (%s): %s", " ".join(objs), sym)
                 errors += 1
 
@@ -493,6 +521,14 @@ class cy_build_ext(build_ext):
             # so export everything (the ELF default the POSIX build relies
             # on).
             ext.extra_link_args.append("-Wl,--export-all-symbols")
+            # D-14: never export the getopt family. Each extension's copy
+            # (vendored win32/getopt.c in libchtslib, or the static mingwex
+            # member pulled into the tool extensions) stays private, so
+            # siblings never bind across module boundaries. binutils' PE
+            # linker delimits --exclude-symbols entries with ':'.
+            ext.extra_link_args.append(
+                "-Wl,--exclude-symbols="
+                + ":".join(sorted(WIN32_GETOPT_EXEMPT_SYMBOLS)))
             ext.extra_link_args.append("-Wl,--out-implib," + implib)
         else:
             if not ext.extra_link_args:
@@ -711,10 +747,15 @@ for fn in config_headers:
 # Windows (MSYS2 UCRT64) compatibility
 if platform.system() == 'Windows':
     include_os = ['win32']
-    # MinGW-w64 has no getopt_long: the vendored getopt implementation is
-    # compiled once, into pysam.libchtslib only (see the module list below),
-    # and every other module resolves getopt_long/opt* through that module's
-    # import library. UCRT64 GCC ships real unistd.h/stdint.h — the stale
+    # The vendored getopt implementation is compiled into pysam.libchtslib
+    # only. The old plan of sharing it with the other modules through the
+    # import library was falsified by the first real UCRT64 build (PE data
+    # references cannot resolve through an import library during archive
+    # scanning, so every module pulled mingwex's own getopt anyway); per
+    # D-14 the family is now excluded from every module's exports and the
+    # tool extensions keep private mingwex copies. win32/getopt.c stays
+    # for the upcoming MSVC path (no getopt there at all).
+    # UCRT64 GCC ships real unistd.h/stdint.h — the stale
     # win32 shim headers were removed in favour of them (they lacked
     # isatty/fileno and risked header shadowing).
     os_c_files = ['win32/getopt.c']
@@ -786,10 +827,12 @@ def prebuild_libcsamtools(ext, force):
 
 
 modules = [
-    # The vendored getopt implementation is compiled once, in this module:
-    # every other module resolves getopt_long/opt* through this module's
-    # import library (win32), which keeps the now-mandatory symbol conflict
-    # check free of legitimate duplicates.
+    # The vendored getopt implementation is compiled in this module only;
+    # per D-14 it is excluded from every module's exports, and each tool
+    # extension links its own private copy from MinGW's static libmingwex
+    # (the same isolation as separate samtools.exe/bcftools.exe on
+    # Windows). The symbol conflict check exempts exactly that closed
+    # symbol set on win32.
     dict(name="pysam.libchtslib",
          prebuild_func=prebuild_libchtslib,
          sources=[source_pattern % "htslib", "pysam/htslib_util.c"] + dynamic_files + os_c_files,
