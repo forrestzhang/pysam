@@ -477,15 +477,18 @@ class cy_build_ext(build_ext):
             # PE binaries have no ELF rpath; only ensure the flag list exists.
             if not ext.extra_link_args:
                 ext.extra_link_args = []
-            if ext.name == 'pysam.libchtslib':
-                # Emit an import library beside the built module so the other
-                # extensions' -l flags resolve through library_dirs (GNU ld
-                # searches for lib<name>.dll.a there). The stub name is
-                # derived from EXT_SUFFIX exactly like internal_htslib_libraries.
-                implib = os.path.join(
-                    "pysam",
-                    "lib" + os.path.splitext("chtslib" + suffix)[0] + ".dll.a")
-                ext.extra_link_args.append("-Wl,--out-implib," + implib)
+            # Emit an import library beside each built module so the other
+            # extensions' -l flags resolve through library_dirs (GNU ld
+            # searches for lib<name>.dll.a there). The stub name is
+            # derived from EXT_SUFFIX exactly like internal_htslib_libraries;
+            # every lib* module can be a link-time dependency of a later
+            # extension (libcutils links csamtools/cbcftools, the feature
+            # modules link chtslib/csamtools/cbcftools/cutils).
+            mod = ext.name.rsplit('.', 1)[-1]
+            implib = os.path.join(
+                "pysam",
+                "lib" + os.path.splitext(mod + suffix)[0] + ".dll.a")
+            ext.extra_link_args.append("-Wl,--out-implib," + implib)
         else:
             if not ext.extra_link_args:
                 ext.extra_link_args = []
