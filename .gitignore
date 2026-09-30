@@ -91,3 +91,12 @@ coverage.xml
 
 # Sphinx documentation
 doc/_build/
+
+# GSD planning runtime state (per-machine; tracked .planning/*.md docs are NOT ignored)
+.gsd/
+.planning/agent-history.json
+.planning/milestone.lock
+.planning/state.json
+
+# MSYS2 UCRT64 dev venv (bootstrap build environment)
+_venv/
