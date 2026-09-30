@@ -9,9 +9,9 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### 构建系统 (Build)
 
-- [ ] **BUILD-01**: MinGW/UCRT64 开发构建 — `setup.py` 在 MSYS2 UCRT64 环境下完整构建 bundled htslib/samtools/bcftools（保留 autotools 流程，仅管道改造；产物仅用于开发验证，不分发）
+- [x] **BUILD-01**: MinGW/UCRT64 开发构建 — `setup.py` 在 MSYS2 UCRT64 环境下完整构建 bundled htslib/samtools/bcftools（保留 autotools 流程，仅管道改造；产物仅用于开发验证，不分发）
 - [ ] **BUILD-02**: MSVC 构建系统 — 预生成 `win32/config.h` + 显式源码清单（Pillow/h5py 模式），产出官方级构建
-- [ ] **BUILD-03**: 符号冲突检查移植 — `nm` → `llvm-nm`/`dumpbin`，接入 `check_ext_symbol_conflicts`（Windows 上 duplicate symbol 导致运行时崩溃而非链接错误）
+- [x] **BUILD-03**: 符号冲突检查移植 — `nm` → `llvm-nm`/`dumpbin`，接入 `check_ext_symbol_conflicts`（Windows 上 duplicate symbol 导致运行时崩溃而非链接错误）
 
 ### 代码可移植性 (Portability)
 
@@ -64,9 +64,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| BUILD-01 | Phase 1 | Pending |
+| BUILD-01 | Phase 1 | Complete |
 | BUILD-02 | Phase 3 | Pending |
-| BUILD-03 | Phase 1 | Pending |
+| BUILD-03 | Phase 1 | Complete |
 | PORT-01 | Phase 2 | Pending |
 | PORT-02 | Phase 2 | Pending |
 | PORT-03 | Phase 2 | Pending |
