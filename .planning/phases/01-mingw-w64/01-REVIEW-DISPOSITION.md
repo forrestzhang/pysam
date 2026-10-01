@@ -5,7 +5,7 @@ titles: json
 findings:
   - id: CR-01
     severity: critical
-    disposition: open
+    disposition: deferred
     title: "Win32 symbol gate reads implib beside `get_ext_fullpath`, but implib is emitted into source-tree `pysam/` — non-inplace builds crash"
   - id: CR-02
     severity: critical
@@ -35,7 +35,7 @@ findings:
     severity: info
     disposition: open
     title: "`random`/`srandom` `-D` remap is redundant with htslib's own `hts_os.h` remap (benign today)"
-open: 8
+open: 7
 total: 8
 recorded: 2026-09-30T02:49:52.784Z
 ---
@@ -44,7 +44,7 @@ recorded: 2026-09-30T02:49:52.784Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| CR-01 | critical | open | - |
+| CR-01 | critical | deferred | triaged 2026-09-30 during UAT (user-delegated): verified first-hand — implib emitted cwd-relative to source-tree pysam/ (setup.py:546-554) while gate reads beside get_ext_fullpath (setup.py:405-410); paths agree on inplace (Phase 1-2 dev flow), diverge on non-inplace (pip install ., setup.py build, bdist_wheel → CalledProcessError). Deferred to Phase 3 entry (BUILD-02): first out-of-tree build phase; fix = derive implib path from os.path.dirname(get_ext_fullpath) |
 | CR-02 | critical | open | - |
 | WR-01 | warning | open | - |
 | WR-02 | warning | open | - |
