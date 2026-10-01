@@ -1,44 +1,44 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 01
-current_phase_name: MinGW-w64 构建系统
-status: executing
-stopped_at: Completed 01-03-PLAN.md (phase 01 all plans executed)
-last_updated: "2026-09-30T02:08:24.423Z"
-last_activity: 2026-09-30
-last_activity_desc: Phase 01 execution resumed (wave continue)
-state_head: a8a417b9fb0e5f62e7156dba8f343a1e50c40541
+current_phase: 2
+current_phase_name: 可移植性加固与测试全绿
+status: planning
+stopped_at: Phase 01 complete, ready to plan Phase 2
+last_updated: "2026-10-01T06:21:39.385Z"
+last_activity: 2026-10-01
+last_activity_desc: Phase 01 complete, transitioned to Phase 2
+state_head: 9a91f2a16410a2b5b96159b5ebaf4427fa57c8e9
 progress:
   total_phases: 4
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
   completed_plans: 3
-  percent: 0
+  percent: 25
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-09-17)
+See: .planning/PROJECT.md (updated 2026-10-01)
 
 **Core value:** Windows 用户能够 `pip install` 拿到 wheel 并正常使用 pysam 的全部功能（htslib API 绑定 + samtools/bcftools 命令封装），完整测试套件在 Windows 上通过。
-**Current focus:** Phase 01 — MinGW-w64 构建系统
+**Current focus:** Phase 2 — 可移植性加固与测试全绿
 
 ## Current Position
 
-Phase: 01 (MinGW-w64 构建系统) — EXECUTING
-Plan: 3 of 3 (all plans executed)
-Status: Phase 01 plans complete — awaiting orchestrator phase close-out chain
-Last activity: 2026-09-30 — Completed 01-03-PLAN.md (UCRT64 end-to-end proof; CI green on 0f326879)
+Phase: 2 — 可移植性加固与测试全绿
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-01 — Phase 01 complete, transitioned to Phase 2
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [███░░░░░░░] 25%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 0
+- Total plans completed: 3
 - Average duration: N/A
 - Total execution time: 0 hours
 
@@ -46,7 +46,7 @@ Progress: [░░░░░░░░░░] 0%
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 01 | 3 | - | - |
 
 **Recent Trend:**
 
@@ -81,7 +81,7 @@ None yet.
 
 ### Blockers/Concerns
 
-- Phase 1 research flag: ucrt64 gcc 对接 python.org CPython 头文件的自定义 build_ext 是文档最少的胶水层（STACK 置信度 MEDIUM）— plan-phase 时考虑 `--research-phase 1`。
+- [Phase 3] CR-01：非 inplace 构建（`pip install .` / `bdist_wheel`）在 win32 符号门处未捕获 CalledProcessError（implib 发射路径 vs 读取路径分叉）— MSVC/wheel 阶段前必须修复（D-17，01-REVIEW-DISPOSITION.md deferred）。
 - Phase 2 research flag: Cython 3.1 编译期平台开关惯用法 + `libc.msvcrt`/`libc.io` 精确映射待核实。
 - Phase 3 research flag: clang-cl 回退路径与 MSVC C99 shim 范围（bundled 源码 VLA 清单）需决策 spike。
 
@@ -95,6 +95,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-30T02:08:24.400Z
-Stopped at: Completed 01-03-PLAN.md (phase 01 all plans executed)
+Last session: 2026-10-01T06:25:00Z
+Stopped at: Phase 01 complete (UAT 4/4, security threats_open 0, verification passed), ready to plan Phase 2
 Resume file: None

@@ -13,7 +13,7 @@
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: MinGW-w64 构建系统** - MSYS2 UCRT64 下从源码完整构建 pysam（开发验证产物）
+- [x] **Phase 1: MinGW-w64 构建系统** - MSYS2 UCRT64 下从源码完整构建 pysam（开发验证产物） (completed 2026-10-01)
 - [ ] **Phase 2: 可移植性加固与测试全绿** - POSIX 依赖清除 + 完整测试套件在 Windows 通过（对等证据）
 - [ ] **Phase 3: MSVC 构建系统** - 预烘焙 config.h.msvc + 显式源码清单的官方级工具链
 - [ ] **Phase 4: Windows CI 与 wheel 分发** - CI 持续产出并分发自包含 win_amd64 wheel（fork 渠道）
@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. `check_ext_symbol_conflicts` 在 Windows 上经 llvm-nm 实际运行，检出重复符号时使构建失败（不再静默跳过）
   4. 现有 Linux/macOS 构建与 CI 保持绿色（零回归）
 
-**Plans:** 3/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 **Wave 1**
@@ -103,7 +103,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. MinGW-w64 构建系统 | 3/3 | In Progress|  |
+| 1. MinGW-w64 构建系统 | 3/3 | Complete    | 2026-10-01 |
 | 2. 可移植性加固与测试全绿 | 0/TBD | Not started | - |
 | 3. MSVC 构建系统 | 0/TBD | Not started | - |
 | 4. Windows CI 与 wheel 分发 | 0/TBD | Not started | - |

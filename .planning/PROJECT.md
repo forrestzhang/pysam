@@ -18,12 +18,12 @@ Windows 用户能够 `pip install` 拿到 wheel 并正常使用 pysam 的全部�
 - ✓ samtools/bcftools 命令封装（`_pysam_dispatch`，经 `devtools/import.py` 正则重写嵌入）— existing
 - ✓ Linux/macOS 上通过 autotools/make 构建 bundled htslib/samtools/bcftools — existing
 - ✓ cibuildwheel 产出 Linux/macOS wheel（`ci.yaml`/`release.yaml`）— existing
+- ✓ MinGW-w64 (MSYS2) 下从源码完整构建 pysam（含 bundled htslib/samtools/bcftools）— Phase 1（UCRT64 单命令 bootstrap，13 扩展 + 13 导入库，BUILD-03 符号门带牙齿，D-16 getopt 隔离，ubuntu/macos CI 零回归）
 
 ### Active
 
 <!-- 当前范围。正在构建的方向。 -->
 
-- [ ] MinGW-w64 (MSYS2) 下从源码完整构建 pysam（含 bundled htslib/samtools/bcftools）
 - [ ] 消除 Python/Cython 层的 POSIX-only 依赖（`posix.unistd`/`posix.fcntl` cimport、硬编码 `/dev/null`、shell 子进程调用）
 - [ ] Windows 下完整测试套件通过（含移植测试中的 POSIX shell 调用与测试数据生成流程）
 - [ ] CI（GitHub Actions）增加 Windows runner，产出并分发 wheel（先 fork 渠道：GitHub Releases）
@@ -63,7 +63,8 @@ Windows 用户能够 `pip install` 拿到 wheel 并正常使用 pysam 的全部�
 | 先 fork 分发 wheel，而非直接追求 PyPI 官方包 | PyPI 包名需上游配合；先在 fork 验证可降低协作不确定性 | — Pending |
 | 中间工具链路线：MinGW/UCRT64 仅作开发验证工具，wheel 只发 MSVC | MinGW 是 htslib 官方验证的 Windows 路径、最快到达"测试全绿"；MSVC 是官方 wheel 生态原生路径；兼顾快速验证与单一发布产物 | — Pending |
 | 全功能对等 + 完整测试套件作为成功标准 | 避免半移植状态难以界定"可用"；测试套件是客观验证依据 | — Pending |
-| **D-16: getopt 族平台豁免（MinGW 隔离模型）** — libchtslib 不再导出 getopt 族（`--exclude-symbols`），各工具扩展持 mingwex 静态私有副本；BUILD-03 门控仅豁免封闭 7 符号集 {getopt, getopt_long, getopt_long_only, optarg, optind, opterr, optopt}，限 win32 路径 | D-10 前提被首次真实 UCRT64 构建证伪：getopt 族在静态 libmingwex.a 中，PE 数据导入缺口使共享设计必然多重定义；采用与 Windows 独立 samtools.exe/bcftools.exe 等价的隔离模型 | — Accepted（2026-09-18，plan 01-03 Task 1 人类裁决） |
+| **D-16: getopt 族平台豁免（MinGW 隔离模型）** — libchtslib 不再导出 getopt 族（`--exclude-symbols`），各工具扩展持 mingwex 静态私有副本；BUILD-03 门控仅豁免封闭 7 符号集 {getopt, getopt_long, getopt_long_only, optarg, optind, opterr, optopt}，限 win32 路径 | D-10 前提被首次真实 UCRT64 构建证伪：getopt 族在静态 libmingwex.a 中，PE 数据导入缺口使共享设计必然多重定义；采用与 Windows 独立 samtools.exe/bcftools.exe 等价的隔离模型 | — Accepted（2026-09-18，plan 01-03 Task 1 人类裁决；UAT 2026-09-30 追认） |
+| **D-17: CR-01 implib 发射路径分叉延后** — 非 inplace 构建（`pip install .` / `setup.py build` / `bdist_wheel`）下符号门探测 `build/lib.../pysam/*.dll.a` 而 implib 实际落源码树 → 未捕获 CalledProcessError；修法：发射路径从 `os.path.dirname(get_ext_fullpath(...))` 派生 | Phase 1/2 开发流全为 inplace（D-14），两路径一致不阻塞；Phase 3（BUILD-02 MSVC）为首个 out-of-tree 构建阶段，必须先行修复 | — Deferred（2026-09-30 UAT 裁决，01-REVIEW-DISPOSITION.md） |
 
 ## Evolution
 
@@ -83,4 +84,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-09-17 after initialization*
+*Last updated: 2026-10-01 after Phase 1*
