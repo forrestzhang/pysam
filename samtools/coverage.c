@@ -230,7 +230,13 @@ void print_hist(FILE *file_out, const sam_hdr_t *h, const stats_aux_t *stats, in
     double region_len = stats[tid].end - stats[tid].beg;
 
     // Calculate histogram that contains percent covered
+#if defined(_MSC_VER)
+    // MSVC does not support VLAs; allocate the histogram on the heap
+    // instead (pysam MSVC port). Freed before this function returns.
+    double *hist_data = malloc(hist_size * sizeof(double));
+#else
     double hist_data[hist_size];
+#endif
     double max_val = 0.0;
     for (i = 0; i < hist_size; ++i) {
         hist_data[i] = (plot_coverage?1:100) * hist[i] / (double) stats[tid].bin_width;
@@ -301,6 +307,9 @@ void print_hist(FILE *file_out, const sam_hdr_t *h, const stats_aux_t *stats, in
     int last_padding = hist_size%10;
     fprintf(file_out, "%*s%s", last_padding, " ", center_text(readable_bps(stats[tid].end, buf), buf2, 10));
     fprintf(file_out, "\n");
+#if defined(_MSC_VER)
+    free(hist_data);
+#endif
 }
 
 int main_coverage(int argc, char *argv[]) {

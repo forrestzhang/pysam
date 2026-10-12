@@ -56,7 +56,24 @@ int @pysam@_puts(const char *s)
 }
 
 
+/* pysam Windows port (Phase 2; compiler gate per D-20): UCRT longjmp()
+   unwinds via RtlUnwindEx, which raises STATUS_BAD_STACK when it walks
+   the GCC-compiled frames of this module, so exit interception crashes
+   the interpreter.  GCC's builtins restore the saved registers directly
+   with no SEH unwind, which is safe within this translation unit
+   (setjmp and longjmp callers both live here).  MSVC provides neither
+   builtin and its standard longjmp is the supported path across
+   MSVC-compiled frames, so MSVC builds keep the standard setjmp/longjmp
+   below.  POSIX builds keep the standard setjmp/longjmp below. */
+#if defined(_WIN32) && !defined(_MSC_VER)
+#define @pysam@_DISPATCH_GCC_BUILTIN_JMP
+#endif
+
+#ifdef @pysam@_DISPATCH_GCC_BUILTIN_JMP
+static void *@pysam@_jmpbuf[5];
+#else
 static jmp_buf @pysam@_jmpbuf;
+#endif
 static int @pysam@_status = 0;
 
 int @pysam@_dispatch(int argc, char *argv[])
@@ -70,14 +87,25 @@ int @pysam@_dispatch(int argc, char *argv[])
   optind = 1;
 #endif
 
+#ifdef @pysam@_DISPATCH_GCC_BUILTIN_JMP
+  if (__builtin_setjmp(@pysam@_jmpbuf) == 0)
+    return @pysam@_main(argc, argv);
+  else
+    return @pysam@_status;
+#else
   if (setjmp(@pysam@_jmpbuf) == 0)
     return @pysam@_main(argc, argv);
   else
     return @pysam@_status;
+#endif
 }
 
 void @pysam@_exit(int status)
 {
   @pysam@_status = status;
+#ifdef @pysam@_DISPATCH_GCC_BUILTIN_JMP
+  __builtin_longjmp(@pysam@_jmpbuf, 1);
+#else
   longjmp(@pysam@_jmpbuf, 1);
+#endif
 }

@@ -56,14 +56,20 @@ int samtools_puts(const char *s)
 }
 
 
-#ifdef _WIN32
-/* pysam Windows port (Phase 2): UCRT longjmp() unwinds via RtlUnwindEx,
-   which raises STATUS_BAD_STACK when it walks the GCC-compiled frames of
-   this module, so exit interception crashes the interpreter (seen with
-   usage() of depth/flagstat/stats/idxstats/reheader).  GCC's builtins
-   restore the saved registers directly with no SEH unwind, which is
-   safe within this translation unit (setjmp and longjmp callers both
-   live here).  POSIX builds keep the standard setjmp/longjmp below. */
+/* pysam Windows port (Phase 2; compiler gate per D-20): UCRT longjmp()
+   unwinds via RtlUnwindEx, which raises STATUS_BAD_STACK when it walks
+   the GCC-compiled frames of this module, so exit interception crashes
+   the interpreter.  GCC's builtins restore the saved registers directly
+   with no SEH unwind, which is safe within this translation unit
+   (setjmp and longjmp callers both live here).  MSVC provides neither
+   builtin and its standard longjmp is the supported path across
+   MSVC-compiled frames, so MSVC builds keep the standard setjmp/longjmp
+   below.  POSIX builds keep the standard setjmp/longjmp below. */
+#if defined(_WIN32) && !defined(_MSC_VER)
+#define samtools_DISPATCH_GCC_BUILTIN_JMP
+#endif
+
+#ifdef samtools_DISPATCH_GCC_BUILTIN_JMP
 static void *samtools_jmpbuf[5];
 #else
 static jmp_buf samtools_jmpbuf;
@@ -81,7 +87,7 @@ int samtools_dispatch(int argc, char *argv[])
   optind = 1;
 #endif
 
-#ifdef _WIN32
+#ifdef samtools_DISPATCH_GCC_BUILTIN_JMP
   if (__builtin_setjmp(samtools_jmpbuf) == 0)
     return samtools_main(argc, argv);
   else
@@ -97,7 +103,7 @@ int samtools_dispatch(int argc, char *argv[])
 void samtools_exit(int status)
 {
   samtools_status = status;
-#ifdef _WIN32
+#ifdef samtools_DISPATCH_GCC_BUILTIN_JMP
   __builtin_longjmp(samtools_jmpbuf, 1);
 #else
   longjmp(samtools_jmpbuf, 1);

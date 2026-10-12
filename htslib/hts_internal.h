@@ -137,7 +137,9 @@ const char *hts_plugin_path(void);
  */
 int bgzf_idx_push(BGZF *fp, hts_idx_t *hidx, int tid, hts_pos_t beg, hts_pos_t end, uint64_t offset, int is_mapped);
 
-static inline int find_file_extension(const char *fn, char ext_out[static HTS_MAX_EXT_LEN])
+/* The array bound is kept plain: the C99 parameter qualifier is not
+   supported by MSVC and carries no semantics GCC relies on. */
+static inline int find_file_extension(const char *fn, char ext_out[HTS_MAX_EXT_LEN])
 {
     const char *delim = fn ? strstr(fn, HTS_IDX_DELIM) : NULL, *ext;
     if (!fn) return -1;
