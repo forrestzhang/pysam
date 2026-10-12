@@ -236,6 +236,10 @@ void print_hist(FILE *file_out, const sam_hdr_t *h, const stats_aux_t *stats, in
     // MSVC does not support VLAs; allocate the histogram on the heap
     // instead (pysam MSVC port). Freed before this function returns.
     double *hist_data = malloc(hist_size * sizeof(double));
+    if (!hist_data) {
+        print_error_errno("coverage", "Failed to allocate memory");
+        return;
+    }
 #else
     double hist_data[hist_size];
 #endif
