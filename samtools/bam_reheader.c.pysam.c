@@ -629,7 +629,25 @@ int main_reheader(int argc, char *argv[])
             print_error("reheader", "cannot reheader BAM '%s' in-place", argv[optind+1]);
             r = -1;
         } else {
+#ifdef _WIN32
+            /* pysam Windows port: bgzf_dopen() takes ownership of the fd it
+               is given (bgzf_close() closes it), but the lender -- the
+               dispatch shim's samtools_stdout FILE*, see samtools.pysam.c --
+               still believes it owns the same descriptor and fcloses it when
+               the dispatch returns.  That double close is silently tolerated
+               by glibc and MSYS2's python (which installs an invalid-
+               parameter handler), but the UCRT behind python.org/conda
+               CPython treats _close() on an already-closed descriptor as a
+               fatal invalid parameter and kills the whole interpreter
+               process (0xC0000409).  Lend a dup() instead: bgzf owns and
+               closes the duplicate, the FILE* keeps its own descriptor.
+               POSIX builds keep the original call (the double close is
+               benign there and the red line is POSIX bytes verbatim). */
+            r = bam_reheader(in->fp.bgzf, h, dup(fileno(samtools_stdout)),
+                             arg_list, no_pg, skip_header);
+#else
             r = bam_reheader(in->fp.bgzf, h, fileno(samtools_stdout), arg_list, no_pg, skip_header);
+#endif
         }
     } else if (hts_get_format(in)->format == cram) {
         if (inplace)

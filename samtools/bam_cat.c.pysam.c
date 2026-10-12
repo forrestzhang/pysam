@@ -717,7 +717,18 @@ int bam_cat(samFile * const firstfile, int nfn, char * const *fn, sam_hdr_t *h, 
         print_error_errno("cat", "failed to make output header");
         goto fail;
     }
+#ifdef _WIN32
+    /* pysam Windows port: same fd-ownership double close as bam_reheader's
+       bgzf_dopen site -- bgzf_fdopen() closes the descriptor it is given on
+       bgzf_close(), but samtools_stdout's FILE* still fcloses the same
+       descriptor when the dispatch returns; the UCRT behind python.org/
+       conda CPython fails fast on that (0xC0000409).  Lend a dup().
+       POSIX keeps the original call. */
+    fp = strcmp(outbam, "-")? bgzf_open(outbam, "w")
+                            : bgzf_fdopen(dup(fileno(samtools_stdout)), "w");
+#else
     fp = strcmp(outbam, "-")? bgzf_open(outbam, "w") : bgzf_fdopen(fileno(samtools_stdout), "w");
+#endif
     if (fp == 0) {
         print_error_errno("cat", "fail to open output file '%s'", outbam);
         goto fail;
