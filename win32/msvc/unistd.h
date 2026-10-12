@@ -24,6 +24,13 @@
 #include <process.h>
 #include <stdlib.h>
 
+/* MinGW's real unistd.h declares the getopt family, and samtools/bcftools
+   sources rely on that (bam_quickcheck.c uses getopt/optind including only
+   <unistd.h>). Under MSVC the vendored win32/getopt.h carries the family
+   (win32/ is on every extension's include path; the D-16 private-copy
+   model links the implementation per tool extension). */
+#include <getopt.h>
+
 #define read(fd, buf, count)   _read((fd), (buf), (count))
 #define write(fd, buf, count)  _write((fd), (buf), (count))
 #define close(fd)              _close((fd))
