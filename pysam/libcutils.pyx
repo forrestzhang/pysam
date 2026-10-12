@@ -19,8 +19,15 @@ from libc.string cimport strerror, strncpy
 from libc.stdint cimport INT32_MAX, int32_t
 from libc.stdio cimport fprintf, stderr, fflush
 from libc.stdio cimport stdout as c_stdout
-from posix.fcntl cimport open as c_open, O_WRONLY, O_CREAT, O_TRUNC
-from posix.unistd cimport dup as c_dup, SEEK_SET, SEEK_CUR, SEEK_END, STDOUT_FILENO
+# centralized fd-I/O platform mapping (D2-01/D2-04): Windows resolves to the
+# CRT underscore variants with _O_BINARY forced inside the mapping; POSIX
+# names are identity aliases, so behavior there is unchanged.
+from pysam.libcport cimport psam_dup as c_dup
+from pysam.libcport cimport psam_open2 as c_open2, psam_open3 as c_open3
+from pysam.libcport cimport PSAM_O_WRONLY as O_WRONLY, PSAM_O_CREAT as O_CREAT, \
+    PSAM_O_TRUNC as O_TRUNC
+from pysam.libcport cimport PSAM_STDOUT_FILENO as STDOUT_FILENO
+from libc.stdio cimport SEEK_SET, SEEK_CUR, SEEK_END
 
 from pysam.libcsamtools cimport samtools_dispatch, samtools_set_stdout, samtools_set_stderr, \
     samtools_close_stdout, samtools_close_stderr, samtools_set_stdout_fn
@@ -349,7 +356,7 @@ def _pysam_dispatch(collection,
     if save_stdout:
         stdout_f = save_stdout
         stdout_f_bytes = force_bytes(stdout_f)
-        stdout_h = c_open(stdout_f_bytes, O_WRONLY|O_CREAT|O_TRUNC, 0o666)
+        stdout_h = c_open3(stdout_f_bytes, O_WRONLY|O_CREAT|O_TRUNC, 0o666)
         if stdout_h == -1:
             raise OSError_from_errno("Could not redirect standard output", stdout_f)
 
@@ -380,14 +387,14 @@ def _pysam_dispatch(collection,
             os.close(stdout_h)
             stdout_f_bytes = force_bytes(stdout_f)
             args.extend(stdout_option.format(stdout_f).split(" "))
-            stdout_h = c_open(force_bytes(os.devnull), O_WRONLY)
+            stdout_h = c_open2(force_bytes(os.devnull), O_WRONLY)
         else:
             stdout_f_bytes = None
 
     else:
         stdout_f_bytes = b"-"
         if catch_stdout is None: stdout_h = c_dup(STDOUT_FILENO)
-        else: stdout_h = c_open(force_bytes(os.devnull), O_WRONLY)
+        else: stdout_h = c_open2(force_bytes(os.devnull), O_WRONLY)
 
     # setup the function call to samtools/bcftools main
     cdef char ** cargs
