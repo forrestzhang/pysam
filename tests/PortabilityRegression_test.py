@@ -7,6 +7,10 @@ core surface: AlignmentFile/VariantFile read + write, .bai/.csi/.tbi index
 building, tabix fetch, and one dispatch command, all under CJK-named
 temporary directories.
 
+WR-01: TestDispatchOutputEncoding — dispatch-captured stdout must decode as
+UTF-8 regardless of the interpreter's locale (cp936-default interpreters
+used to mojibake UTF-8 tool output silently, with no exception raised).
+
 This module is self-contained (pytest tmp_path only; no make_data_files
 dependency, no subprocess/shell usage, no network access).
 '''
@@ -249,3 +253,36 @@ class TestBinaryMode:
         pysam.tabix_compress(src, dst2)
         assert checkBinaryEqual(dst1, dst2) is True
         assert checkGZBinaryEqual(dst1, dst2) is True
+
+
+CJK_CO_COMMENT = u"样本注释：调度输出编码测试"
+
+
+class TestDispatchOutputEncoding:
+    '''WR-01: dispatch-captured stdout decodes as UTF-8 on every interpreter
+    locale.  The capture file is written by the C dispatch binaries as raw
+    bytes; reading it through the locale-default text codec (cp936 on this
+    machine) silently mojibakes any non-ASCII tool output.  The expected
+    capture path is an explicit binary read plus UTF-8 decode with
+    replacement, so this assertion is platform-neutral by construction.
+    '''
+
+    def test_cjk_header_comment_roundtrip(self, tmp_path):
+        # Binary-mode write of UTF-8 SAM bytes (header discipline per
+        # devtools/smoke_test.py: htslib requires SQ lines).
+        sam_path = os.path.join(str(tmp_path), "cjk_header.sam")
+        sam_text = u"".join([
+            u"@HD\tVN:1.6\n",
+            u"@SQ\tSN:chr1\tLN:1000\n",
+            u"@CO\t%s\n" % CJK_CO_COMMENT,
+        ])
+        with open(sam_path, "wb") as outf:
+            outf.write(sam_text.encode("utf-8"))
+
+        # Same dispatch call shape as devtools/smoke_test.py: catch_stdout
+        # is the default, so the return value is the collected stdout.
+        header = pysam.samtools.view("-H", sam_path)
+
+        assert isinstance(header, str)
+        assert u"@CO" in header
+        assert CJK_CO_COMMENT in header
