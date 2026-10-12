@@ -1,0 +1,86 @@
+/* win32/config.h.msvc -- pre-baked htslib configuration for the MSVC
+   (cl.exe) build path (BUILD-02; the Pillow/libusb pre-baked pattern).
+   setup.py's MSVC arm copies this file over htslib/config.h on every
+   run (deterministic rewrite), so alternating between the MSVC and
+   UCRT64 toolchains in one checkout is always safe -- the UCRT64 path
+   rewrites the same file through its real configure run.
+
+   Curation: harvested from a real configure harvest, then reduced to
+   the keys that are meaningful and portable under cl -- compression
+   libraries, ISO standard headers, x86 SIMD capability, and package
+   identity. Probe keys whose semantics belong to the GCC compiler
+   family, to GCC-only headers, or to POSIX-only facilities are
+   deliberately absent; absence is the correct probe answer under
+   MSVC, and the scalar fallbacks those absences select are htslib's
+   own supported code paths. Do not add keys here without proving the
+   corresponding code path against cl. */
+
+/* Defined to 1 if rANS source using AVX2 can be compiled. */
+#define HAVE_AVX2 1
+
+/* Defined to 1 if rANS source using AVX512F can be compiled. */
+#define HAVE_AVX512 1
+
+/* Define to 1 if you have the <inttypes.h> header file. */
+#define HAVE_INTTYPES_H 1
+
+/* Define to 1 if you have the 'bz2' library (-lbz2). */
+#define HAVE_LIBBZ2 1
+
+/* Define to 1 if you have the 'lzma' library (-llzma). */
+#define HAVE_LIBLZMA 1
+
+/* Define to 1 if you have the 'z' library (-lz). */
+#define HAVE_LIBZ 1
+
+/* Define to 1 if you have the <lzma.h> header file. */
+#define HAVE_LZMA_H 1
+
+/* Defined to 1 if rANS source using popcnt can be compiled. */
+#define HAVE_POPCNT 1
+
+/* Defined to 1 if rANS source using SSE4.1 can be compiled. */
+#define HAVE_SSE4_1 1
+
+/* Defined to 1 if rANS source using SSSE3 can be compiled. */
+#define HAVE_SSSE3 1
+
+/* Define to 1 if you have the <stdint.h> header file. */
+#define HAVE_STDINT_H 1
+
+/* Define to 1 if you have the <stdio.h> header file. */
+#define HAVE_STDIO_H 1
+
+/* Define to 1 if you have the <stdlib.h> header file. */
+#define HAVE_STDLIB_H 1
+
+/* Define to 1 if you have the <string.h> header file. */
+#define HAVE_STRING_H 1
+
+/* Define to 1 if you have the <sys/stat.h> header file. */
+#define HAVE_SYS_STAT_H 1
+
+/* Define to 1 if you have the <sys/types.h> header file. */
+#define HAVE_SYS_TYPES_H 1
+
+/* Define to the address where bug reports for this package should be sent. */
+#define PACKAGE_BUGREPORT "samtools-help@lists.sourceforge.net"
+
+/* Define to the full name of this package. */
+#define PACKAGE_NAME "HTSlib"
+
+/* Define to the full name and version of this package. */
+#define PACKAGE_STRING "HTSlib 1.24"
+
+/* Define to the one symbol short name of this package. */
+#define PACKAGE_TARNAME "htslib"
+
+/* Define to the home page for this package. */
+#define PACKAGE_URL "http://www.htslib.org/"
+
+/* Define to the version of this package. */
+#define PACKAGE_VERSION "1.24"
+
+/* Number of bits in a file offset, on hosts where this is settable.
+   (Inert under MSVC; kept for harvest parity.) */
+#define _FILE_OFFSET_BITS 64

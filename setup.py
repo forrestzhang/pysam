@@ -57,7 +57,19 @@ def _is_ucrt64_python():
             and os.environ.get("MSYSTEM") == "UCRT64")
 
 
-if not _is_ucrt64_python():
+# BUILD-02 (03-03): the second Windows toolchain. Any nt python that is
+# not MSYS2/mingw (win-amd64 CPython -- python.org or conda builds)
+# builds through MSVC: setuptools auto-locates cl.exe from the Visual
+# Studio Build Tools with the C++ workload (2022 or later; never a
+# VS-version path). The module graph below dispatches on this flag;
+# compiler flags inside cy_build_ext dispatch on compiler_type instead
+# (two-level dispatch: platform picks sources, compiler_type picks
+# flags).
+IS_MSVC_PYTHON = (os.name == 'nt'
+                  and not sysconfig.get_platform().startswith("mingw"))
+
+
+if not _is_ucrt64_python() and not IS_MSVC_PYTHON:
     # Strict fail-fast outside UCRT64: this message mirrors, package for
     # package, the PKGS list in devtools/msys2-bootstrap.sh.
     sys.exit(
@@ -75,6 +87,15 @@ if not _is_ucrt64_python():
         "  mingw-w64-ucrt-x86_64-zlib\n"
         "  mingw-w64-ucrt-x86_64-bzip2\n"
         "  mingw-w64-ucrt-x86_64-xz\n")
+
+
+if IS_MSVC_PYTHON:
+    # MSVC-mode banner (no import-time exit: introspection such as
+    # 'setup.py --name' must work). The prerequisite wording mirrors
+    # devtools/msvc-build.md verbatim (D-03/D-13 single-source pattern).
+    print("# pysam: MSVC build mode (win CPython + cl.exe via setuptools)")
+    print("# pysam: MSVC builds require Visual Studio Build Tools with the")
+    print("# pysam: C++ workload (2022 or later) - see devtools/msvc-build.md")
 
 
 @contextmanager
@@ -434,6 +455,16 @@ class cy_build_ext(build_ext):
 
     def c99_compile_args(self):
         """Determines whether any compiler flags are needed to ensure C99 compilation."""
+        if getattr(self.compiler, "compiler_type", None) == "msvc":
+            # BUILD-02 (03-03): skip the conftest_cstd.c probe under cl --
+            # the probe source includes <unistd.h> and references optind,
+            # which is unportable under MSVC, so every candidate flag
+            # would fail and abort with "cannot compile C99". cl accepts
+            # /std:c11 since VS2019 16.8; /utf-8 pins the source charset
+            # (avoids C4819 on cp936 consoles). This mirrors how the
+            # -Wno-* block below is gated away from Windows compilers.
+            log.info("msvc: skipping C99 probe; using /std:c11 /utf-8")
+            return ["/std:c11", "/utf-8"]
         compiler = getattr(self.compiler, "compiler", "C compiler")
         if isinstance(compiler, list): compiler = compiler[0]
         log.info("checking for %s option to enable C99 features...", compiler)
@@ -621,6 +652,46 @@ HTSLIB_INCLUDE_DIR = os.environ.get("HTSLIB_INCLUDE_DIR", None)
 HTSLIB_CONFIGURE_OPTIONS = os.environ.get("HTSLIB_CONFIGURE_OPTIONS", None)
 HTSLIB_SOURCE = None
 
+# BUILD-02 (03-03): MSVC short-circuit constants. MSVC_LIBHTS_OBJS
+# mirrors the LIBHTS_OBJS expansion of htslib/Makefile -- THE source of
+# truth (count-checked at write time: 27 htslib core + 11 cram +
+# 14 htscodecs = 52 TUs, the --disable-libcurl configuration parity).
+# The .o names are what 'make print-config' would report; the MSVC
+# module graph turns each into its .c source (03-03 Task 3). The
+# compression and regex dependencies are vendored under vendor/ and
+# enter as compiled sources there, so the only system -l residue is
+# ws2_32 (sockets; UCRT64 links it too).
+MSVC_LIBHTS_OBJS = [
+    # htslib core (htslib/Makefile LIBHTS_OBJS, top-level entries)
+    "kfunc.o", "kstring.o", "bcf_sr_sort.o", "bgzf.o", "errmod.o",
+    "faidx.o", "header.o", "hfile.o", "hts.o", "hts_expr.o", "hts_os.o",
+    "md5.o", "multipart.o", "probaln.o", "realn.o", "regidx.o",
+    "region.o", "sam.o", "sam_mods.o", "simd.o", "synced_bcf_reader.o",
+    "vcf_sweep.o", "tbx.o", "textutils.o", "thread_pool.o", "vcf.o",
+    "vcfutils.o",
+    # cram (htslib/Makefile LIBHTS_OBJS, cram/ entries)
+    "cram/cram_codecs.o", "cram/cram_decode.o", "cram/cram_encode.o",
+    "cram/cram_external.o", "cram/cram_index.o", "cram/cram_io.o",
+    "cram/cram_stats.o", "cram/mFILE.o", "cram/open_trace_file.o",
+    "cram/pooled_alloc.o", "cram/string_alloc.o",
+    # htscodecs (htslib/Makefile $(HTSCODECS_OBJS) expansion)
+    "htscodecs/htscodecs/arith_dynamic.o",
+    "htscodecs/htscodecs/fqzcomp_qual.o",
+    "htscodecs/htscodecs/htscodecs.o",
+    "htscodecs/htscodecs/pack.o",
+    "htscodecs/htscodecs/rANS_static4x16pr.o",
+    "htscodecs/htscodecs/rANS_static32x16pr_avx2.o",
+    "htscodecs/htscodecs/rANS_static32x16pr_avx512.o",
+    "htscodecs/htscodecs/rANS_static32x16pr_sse4.o",
+    "htscodecs/htscodecs/rANS_static32x16pr_neon.o",
+    "htscodecs/htscodecs/rANS_static32x16pr.o",
+    "htscodecs/htscodecs/rANS_static.o",
+    "htscodecs/htscodecs/rle.o",
+    "htscodecs/htscodecs/tokenise_name3.o",
+    "htscodecs/htscodecs/utils.o",
+]
+MSVC_LIBHTS_LIBS = "ws2_32"
+
 package_list = ['pysam',
                 'pysam.include',
                 'pysam.include.samtools',
@@ -665,11 +736,32 @@ if HTSLIB_MODE in ['shared', 'separate']:
                      'pysam.include.htslib.htslib']
     package_dirs.update({'pysam.include.htslib': 'htslib'})
 
-    htslib_configure_options = configure_library(
-        "htslib",
-        HTSLIB_CONFIGURE_OPTIONS,
-        ["--enable-libcurl",
-         "--disable-libcurl"])
+    if IS_MSVC_PYTHON:
+        # BUILD-02 (03-03): the MSVC arm never invokes autotools -- no
+        # configure, no make print-config (cl.exe cannot run either).
+        # htslib/config.h is deterministically rewritten from the
+        # checked-in win32/config.h.msvc on EVERY run, so alternating
+        # with UCRT64 builds is always safe (that path rewrites the same
+        # file through real configure). The make options come from the
+        # hard-coded MSVC mirror above instead of 'make print-config'.
+        htslib_configure_options = "pre-baked win32/config.h.msvc"
+        with open("win32/config.h.msvc") as inf, \
+             open("htslib/config.h", "w") as outf:
+            outf.write(inf.read())
+        print("# pysam: htslib/config.h rewritten from win32/config.h.msvc")
+        htslib_make_options = {
+            "LIBHTS_OBJS": " ".join(MSVC_LIBHTS_OBJS),
+            "LIBS": MSVC_LIBHTS_LIBS,
+        }
+    else:
+        htslib_configure_options = configure_library(
+            "htslib",
+            HTSLIB_CONFIGURE_OPTIONS,
+            ["--enable-libcurl",
+             "--disable-libcurl"])
+
+        with changedir("htslib"):
+            htslib_make_options = run_make_print_config()
 
     HTSLIB_SOURCE = "builtin"
     print(f"# pysam: htslib configure options: {htslib_configure_options}")
@@ -682,9 +774,6 @@ if HTSLIB_MODE in ['shared', 'separate']:
                 "/* empty config.h created by pysam */\n")
             outf.write(
                 "/* conservative compilation options */\n")
-
-    with changedir("htslib"):
-        htslib_make_options = run_make_print_config()
 
     for key, value in htslib_make_options.items():
         print(f"# pysam: htslib_config {key}={value}")
