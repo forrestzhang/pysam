@@ -22,8 +22,8 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### 测试 (Testing)
 
-- [ ] **TEST-01**: 测试全绿 — 完整测试套件在 Windows 通过（含 7 个测试文件的 POSIX shell 调用移植、make 测试数据生成的 Windows 替代、spawn 安全 conftest）
-- [ ] **TEST-02**: 测试数对账 — 收集的测试数与 Linux 基线 skip-parity 对账，作为客观指标
+- [x] **TEST-01**: 测试全绿 — 完整测试套件在 Windows 通过（含 7 个测试文件的 POSIX shell 调用移植、make 测试数据生成的 Windows 替代、spawn 安全 conftest）
+- [x] **TEST-02**: 测试数对账 — 收集的测试数与 Linux 基线 skip-parity 对账，作为客观指标
 
 ### CI 与分发 (CI & Distribution)
 
@@ -71,8 +71,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PORT-02 | Phase 2 | Complete |
 | PORT-03 | Phase 2 | Complete |
 | PORT-04 | Phase 2 | Complete |
-| TEST-01 | Phase 2 | Pending |
-| TEST-02 | Phase 2 | Pending |
+| TEST-01 | Phase 2 | Complete |
+| TEST-02 | Phase 2 | Complete |
 | CI-01 | Phase 4 | Pending |
 | CI-02 | Phase 4 | Pending |
 | CI-03 | Phase 4 | Pending |

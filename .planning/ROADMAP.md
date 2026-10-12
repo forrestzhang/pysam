@@ -60,7 +60,7 @@ Plans:
   4. `compile_test.py` 结构体大小断言按 LLP64 更新并通过（`long` 截断审计关闭）
   5. CJK 非 ASCII 文件名金丝雀测试通过
 
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans executed
 
 Plans:
 **Wave 1**
@@ -77,7 +77,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 02-04-PLAN.md — 全量套件绿 + D2-07 四项已知失败 fix-first 处置 + TEST-02 对账与零回归收口（TEST-01, TEST-02）
+- [x] 02-04-PLAN.md — 全量套件绿 + D2-07 四项已知失败 fix-first 处置 + TEST-02 对账与零回归收口（TEST-01, TEST-02）
 
 ### Phase 3: MSVC 构建系统
 
@@ -121,7 +121,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. MinGW-w64 构建系统 | 3/3 | Complete    | 2026-10-01 |
-| 2. 可移植性加固与测试全绿 | 3/4 | In Progress | - |
+| 2. 可移植性加固与测试全绿 | 4/4 | In Progress | - |
 | 3. MSVC 构建系统 | 0/TBD | Not started | - |
 | 4. Windows CI 与 wheel 分发 | 0/TBD | Not started | - |
 

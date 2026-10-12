@@ -2,17 +2,17 @@
 gsd_state_version: "1.0"
 current_phase: 02
 current_phase_name: 可移植性加固与测试全绿
-status: executing
-stopped_at: Completed 02-03-PLAN.md
-last_updated: "2026-10-12T07:02:26.581Z"
+status: verifying
+stopped_at: Completed 02-04-PLAN.md
+last_updated: "2026-10-12T08:08:07.351Z"
 last_activity: 2026-10-12
 last_activity_desc: Phase 02 execution started
-state_head: 0aca5732bdbd20072d37c8f5779c4988401e88ba
+state_head: 61125c2a97e56a83fead338e6d9ab67f19b02902
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 7
-  completed_plans: 6
+  completed_plans: 7
   percent: 25
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-01)
 
 Phase: 02 (可移植性加固与测试全绿) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-10-12 — Phase 02 execution started
 
 Progress: [███░░░░░░░] 25%
@@ -64,6 +64,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 02 P01 | 27 min | 3 tasks | 6 files |
 | Phase 02 P02 | 49 min | 3 tasks | 8 files |
 | Phase 02 P03 | 54 min | 3 tasks | 12 files |
+| Phase 02 P04 | 53 min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -88,6 +89,9 @@ Recent decisions affecting current work:
 - [Phase 02]: htslib fd_write Windows raise(SIGTERM)-on-broken-pipe kills the CPython host process (CPython sets SIGPIPE to SIG_IGN on POSIX so Linux never dies); pysam Windows port reports errno=EPIPE with an error return instead - identical error flow on every platform, POSIX block untouched (02-03).
 - [Phase 02]: Dispatch exit interception (samtools_exit/bcftools_exit) crashes with STATUS_BAD_STACK (0xC0000028) under UCRT longjmp's RtlUnwindEx despite full .pdata coverage; _WIN32 builds use GCC __builtin_setjmp/__builtin_longjmp (direct register restore, no SEH unwind, setjmp and longjmp live in one TU); POSIX keeps standard setjmp/longjmp verbatim (02-03).
 - [Phase 02]: samtools_test win32 oracle: redirect statements capture dispatch output to the target file; -o statements run with catch_stdout=False letting samtools' own output handling write the files; three-tier comparison ladder unchanged; POSIX keeps the external run_command oracle and fork CI ubuntu remains the external-binary coverage (D2-05 acknowledged weakening) (02-03).
+- [Phase 02]: Plan 02-04: upstream #1274's four known failures reduce to one test-hygiene bug on our build - TestLogging check() leaked an open FileHandler (POSIX tolerates unlink-while-open; Windows WinError 32); fixed by closing the handler (POSIX no-op). testReadingFromFileWithoutIndex passes; zero exemptions needed for the checklist names.
+- [Phase 02]: Plan 02-04: httpserver must be platform-split - _pysam_dispatch runs samtools mains with the GIL held, so 02-03's thread server starved during dispatch-blocked libcurl transfers (ubuntu TestRemoteFileHTTP::testView timeout); POSIX restored upstream's child-process server verbatim, win32 keeps the spawn-safe thread variant. v2 remote-I/O note: Windows needs the process server or a nogil dispatch once libcurl is enabled.
+- [Phase 02]: Plan 02-04: TEST-02 baseline = fork CI direct (ubuntu, 3.14) on the phase-final code SHA; node-id set reconciliation (not count arithmetic) shows collection differs in exactly one module - typechecking (mypy on CI, absent from UCRT64 venv, documented as env-difference exemption). Windows collected 1040 = 1028 + phase's own 12 tests; run-vs-collect +2 = module-skip placeholders.
 
 ### Pending Todos
 
@@ -109,6 +113,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T07:02:26.545Z
-Stopped at: Completed 02-03-PLAN.md
+Last session: 2026-10-12T08:08:07.315Z
+Stopped at: Completed 02-04-PLAN.md
 Resume file: None
