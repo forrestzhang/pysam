@@ -16,9 +16,9 @@ Requirements for initial release. Each maps to roadmap phases.
 ### 代码可移植性 (Portability)
 
 - [x] **PORT-01**: POSIX 依赖清除 — `posix.unistd`/`posix.fcntl` cimport、硬编码 `/dev/null`、fork/signal 等 POSIX-only 路径全部消除或条件化
-- [ ] **PORT-02**: 二进制模式审计 — 所有文件 I/O 强制 `O_BINARY`/`"b"`，防止 `\r\n` 翻译静默损坏 BAM/BGZF
-- [ ] **PORT-03**: LLP64 类型审计 — `long` 截断与类型宽度检查（用 `compile_test.py` 做本地化工具，而非跳过）
-- [ ] **PORT-04**: 非 ASCII 路径适配 — 宽字符 API shim + CJK 文件名金丝雀测试
+- [x] **PORT-02**: 二进制模式审计 — 所有文件 I/O 强制 `O_BINARY`/`"b"`，防止 `\r\n` 翻译静默损坏 BAM/BGZF
+- [x] **PORT-03**: LLP64 类型审计 — `long` 截断与类型宽度检查（用 `compile_test.py` 做本地化工具，而非跳过）
+- [x] **PORT-04**: 非 ASCII 路径适配 — 宽字符 API shim + CJK 文件名金丝雀测试
 
 ### 测试 (Testing)
 
@@ -68,9 +68,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | BUILD-02 | Phase 3 | Pending |
 | BUILD-03 | Phase 1 | Complete |
 | PORT-01 | Phase 2 | Complete |
-| PORT-02 | Phase 2 | Pending |
-| PORT-03 | Phase 2 | Pending |
-| PORT-04 | Phase 2 | Pending |
+| PORT-02 | Phase 2 | Complete |
+| PORT-03 | Phase 2 | Complete |
+| PORT-04 | Phase 2 | Complete |
 | TEST-01 | Phase 2 | Pending |
 | TEST-02 | Phase 2 | Pending |
 | CI-01 | Phase 4 | Pending |

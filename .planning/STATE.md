@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 02
 current_phase_name: 可移植性加固与测试全绿
 status: executing
-stopped_at: Completed 02-01-PLAN.md
-last_updated: "2026-10-12T05:02:44.724Z"
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-10-12T06:00:10.160Z"
 last_activity: 2026-10-12
 last_activity_desc: Phase 02 execution started
-state_head: 7352f447eb9d62e3ab12a5fb316a5d38b056b72e
+state_head: 100389f1bf3bc0c92b53446f8b95a50ad4af9ff7
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 7
-  completed_plans: 4
+  completed_plans: 5
   percent: 25
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-01)
 ## Current Position
 
 Phase: 02 (可移植性加固与测试全绿) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-10-12 — Phase 02 execution started
 
@@ -62,6 +62,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 01 P02 | 24 min | 3 tasks | 4 files |
 | Phase 01 P03 | 11d 18h (11.5d paused at gh-auth gate; ~6h active) | 3 tasks | 8 files |
 | Phase 02 P01 | 27 min | 3 tasks | 6 files |
+| Phase 02 P02 | 49 min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,9 @@ Recent decisions affecting current work:
 - [Phase 02]: Plan 02-01: save_stdout byte proof runs on flagstat, not view - samtools view writes via htslib '-' to fd 1 on every platform so its save_stdout file is always empty; flagstat is the command that flows through the dispatch redirect fd.
 - [Phase 02]: Plan 02-01: write-side CRLF corruption at libcutils save_stdout was masked in-process by CPython startup _fmode=_O_BINARY (fdopen FILE* layer); psam_open3's _O_BINARY makes the fd binary-by-flag (standalone-C probe proved CRT default corrupts). Read side (tabix_compress) was live-corrupt: 203->153 bytes, fixed.
 - [Phase 02]: Plan 02-01: canonical UCRT64 rebuild requires both HTSLIB_CONFIGURE_OPTIONS=--disable-libcurl and MAKE=mingw32-make (devtools/msys2-bootstrap.sh contract).
+- [Phase 02]: Plan 02-02: PORT-04 needed wide-open shims at THREE layers, not one - hopen_fd (htslib), psam_wopen (libcport, covers tabix_compress/save_stdout), idx_stat_exists (hts.c index auto-discovery). Canary-first design found each; all use two-call MultiByteToWideChar, no MAX_PATH.
+- [Phase 02]: Plan 02-02: htslib C-source edits require 'setup.py build_ext --inplace --force' - pip install -e . skips libhts.a rebuild when it exists and extensions do not relink on extra_object changes.
+- [Phase 02]: Plan 02-02: pyximport on this env needs repo root appended to sys.path (PEP 660 editable hides pysam/*.pxd from Cython) and an absolute build_dir (relative .pyd paths fail the Windows loader).
 
 ### Pending Todos
 
@@ -100,6 +104,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T05:02:44.692Z
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-10-12T05:59:56.559Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None

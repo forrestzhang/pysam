@@ -60,7 +60,7 @@ Plans:
   4. `compile_test.py` 结构体大小断言按 LLP64 更新并通过（`long` 截断审计关闭）
   5. CJK 非 ASCII 文件名金丝雀测试通过
 
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 
 Plans:
 **Wave 1**
@@ -69,7 +69,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion — 共享构建目录的 rebuild 互斥)*
 
-- [ ] 02-02-PLAN.md — 审计三闭环：CJK 宽字符 shim（PORT-04）+ 字节级回归测试与 call-site 清单（PORT-02）+ LLP64 断言与 static asserts（PORT-03）
+- [x] 02-02-PLAN.md — 审计三闭环：CJK 宽字符 shim（PORT-04）+ 字节级回归测试与 call-site 清单（PORT-02）+ LLP64 断言与 static asserts（PORT-03）
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -121,7 +121,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. MinGW-w64 构建系统 | 3/3 | Complete    | 2026-10-01 |
-| 2. 可移植性加固与测试全绿 | 1/4 | In Progress | - |
+| 2. 可移植性加固与测试全绿 | 2/4 | In Progress | - |
 | 3. MSVC 构建系统 | 0/TBD | Not started | - |
 | 4. Windows CI 与 wheel 分发 | 0/TBD | Not started | - |
 
