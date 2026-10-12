@@ -457,15 +457,21 @@ def _pysam_dispatch(collection,
                 # codec, which silently mojibakes non-ASCII output on
                 # non-UTF-8 locales (WR-01).  The decode is STRICT-first
                 # rather than replacement-always: well-formed UTF-8 text
-                # (the normal case, incl. CJK output) decodes to str with
-                # identical bytes either way, while data that is NOT valid
-                # UTF-8 is binary tool output -- e.g. reheader's and cat's
-                # BAM written to captured stdout -- which must be
-                # returned as raw bytes, not a lossy U+FFFD str
-                # (replacement decoding destroyed the BAM bytes and the
-                # samtools_test oracle's force_bytes() failed on the
-                # replacement chars; 03-05).  The bytes fallback is the
-                # pre-WR-01 behavior every consumer already handles.
+                # (the normal case, incl. CJK output) decodes to str --
+                # identical to the old behavior on UTF-8-locale
+                # interpreters, the default since PEP 538 locale
+                # coercion.  Data that is NOT valid UTF-8 -- binary tool
+                # output such as reheader's and cat's BAM written to
+                # captured stdout -- is returned as raw bytes instead of
+                # a lossy U+FFFD str (replacement decoding destroyed the
+                # BAM bytes and the samtools_test oracle's force_bytes()
+                # failed on the replacement chars; 03-05).  On an
+                # interpreter running an explicit non-UTF-8 locale this
+                # is a deliberate return-type change from the old
+                # locale-codec read, which produced a lossy str for such
+                # data (e.g. latin-1 decodes any byte sequence): that
+                # str was destroyed data, and raw bytes is the pre-WR-01
+                # capture shape every consumer already handles.
                 data = inf.read()
                 out = data.decode(TEXT_ENCODING)
         except UnicodeDecodeError:
