@@ -534,8 +534,15 @@ class cy_build_ext(build_ext):
             # stub name is the module + EXT_SUFFIX stem + .dll.a — exactly
             # what '-l<name minus lib prefix>' expands to.
             mod = ext.name.rsplit('.', 1)[-1]
+            # D-17: derive the implib path from the module's own output
+            # directory so emission and the symbol-gate probe (which reads
+            # get_ext_fullpath + ".dll.a") always target the same file,
+            # inplace or not. The dirname is always on the -l search path:
+            # common_options puts abspath("pysam") in every extension's
+            # library_dirs, and build_extension appends build_lib/pysam
+            # when not inplace.
             implib = os.path.join(
-                "pysam",
+                os.path.dirname(self.get_ext_fullpath(ext.name)),
                 os.path.splitext(mod + suffix)[0] + ".dll.a")
             # distutils hands the linker a .def file naming only PyInit_*,
             # which suppresses PE auto-export; later extensions resolve
