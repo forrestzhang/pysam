@@ -71,8 +71,10 @@ Kept beyond the strict minimum:
 - **bzip2**: no configuration header exists. Compile the 7 library TUs with
   `-I vendor/bzip2`. Upstream `makefile.msc` proves cl compatibility.
 - **xz/liblzma**: no `HAVE_CONFIG_H`. sysdefs.h falls back to direct header
-  assumptions; MSVC needs `-DHAVE_STDINT_H=1 -DHAVE_INTTYPES_H=1` (MSVC ships
-  both since VS2013). Include dirs:
+  assumptions; MSVC needs `-DHAVE_STDINT_H=1 -DHAVE_INTTYPES_H=1
+  -DHAVE_STDBOOL_H=1` (MSVC ships all three; without HAVE_STDBOOL_H the
+  fallback `typedef unsigned char _Bool` collides with the C11 builtin).
+  Include dirs:
   `-I vendor/xz/src/liblzma/api -I vendor/xz/src/liblzma/common
   -I vendor/xz/src/liblzma/check -I vendor/xz/src/liblzma/lz
   -I vendor/xz/src/liblzma/lzma -I vendor/xz/src/liblzma/delta
@@ -96,9 +98,18 @@ Files and their provenance state:
 
 | File | State |
 |------|-------|
-| regcomp.c, regexec.c, regerror.c, tre-mem.c, tre.h, COPYRIGHT | **byte-identical** to musl 1.2.6 (`src/regex/*`, top-level `COPYRIGHT`) |
-| regex.h | **adapted** — the only adapted file; see below |
+| regcomp.c, regerror.c, tre-mem.c, COPYRIGHT | **byte-identical** to musl 1.2.6 (`src/regex/*`, top-level `COPYRIGHT`) |
+| regexec.c | **one compat edit** — `pmatch[restrict]` array-parameter qualifier dropped (see below) |
+| tre.h | **one compat edit** — ALIGN macro's `(long)` casts widened to `(size_t)` (see below) |
+| regex.h | **adapted** — the only header adaptation; see below |
 | locale_impl.h | **vendored shim** (not upstream content) — see below |
+
+MSVC compile defines (recorded for plan 03-03): `-D hidden= -D RE_DUP_MAX=255
+-D CHARCLASS_NAME_MAX=14` — `hidden` is musl's visibility macro (used on 3
+declarations in tre.h; empty is correct for a static compile), and
+RE_DUP_MAX/CHARCLASS_NAME_MAX live in musl's `include/limits.h` extensions
+(values from musl 1.2.6 limits.h lines 85/81; a cross-check of all 112 musl
+limits.h macros against the vendored TUs shows no other missing ones).
 
 - `regfree` is *not* a separate TU in musl 1.2.6: it is defined inside
   `regcomp.c` (regfree coverage therefore present in-TU). `tre-mem.c` is the
@@ -113,6 +124,19 @@ Files and their provenance state:
   (`TYPEDEF _Addr regoff_t`, `_Addr` = `long`). Everything below the
   adaptation marker is byte-identical to upstream.
 
+- **regexec.c compat edit** (genuine MSVC compiler gap, 03-02 Task 3): the
+  `regexec` definition used the C99/C11 array-parameter qualifier
+  `regmatch_t pmatch[restrict]` — the same MSVC-rejected construct class as
+  htslib/hts_internal.h's `[static N]` (dropped in 03-01). Changed to the
+  empty-bracket form `pmatch[]`, which decays to the same `regmatch_t *`
+  as regex.h's prototype. Pure aliasing hint; no semantic change.
+
+- **tre.h compat edit** (genuine MSVC/LLP64 gap, 03-02 Task 3): the ALIGN
+  macro cast pointers to `long` — 32-bit on win64, so the casts truncated
+  64-bit heap pointers (C4311). Widened to `(size_t)` (64-bit on both
+  musl's LP64 target and win64; on musl size_t == unsigned long, so the
+  arithmetic there is unchanged). Same modulo math otherwise.
+
 - **locale_impl.h shim**: upstream `regerror.c` includes musl's internal
   `locale_impl.h` solely for `LCTRANS_CUR(s)`, whose default C-locale
   behavior upstream is the identity function (the weak `__lctrans_impl`
@@ -126,8 +150,48 @@ Files and their provenance state:
 
 The four TUs contain no GNU extensions and no VLAs (scanned: `__attribute__`,
 `__thread`, `weak_alias`, `__builtin`, `__asm__`, `__GNUC__`, variable-length
-arrays — all zero hits). Compile with `-I vendor/regex`; no configuration
-header and no defines are required.
+arrays — all zero hits; the one external musl macro they reference is
+`hidden`, neutralized by the empty define above). Compile with
+`-I vendor/regex -D hidden= -D RE_DUP_MAX=255 -D CHARCLASS_NAME_MAX=14`.
+Known-benign MSVC warnings (surfaced by the probe, /W3): C4005 NDEBUG
+redefinition (tre.h defines NDEBUG that distutils' default /DNDEBUG already
+provides — cosmetic) and one C4267 size_t-to-int narrowing in tre-mem.c
+(upstream's int-typed block accounting; sizes are small).
 
 The UCRT64 path is NOT touched by this tree — it keeps linking the MSYS2
 `-lregex` package; `vendor/regex/` exists for the MSVC module graph only.
+
+## Proven cl-compile probe command lines (03-02 Task 3)
+
+Run from the repo root with the MSVC-compatible interpreter
+(`D:/miniconda3/python.exe`); setuptools auto-locates cl.exe (VS 2026
+BuildTools 18.4.1, toolset 14.50 was used). All lines exit 0 — every listed
+TU compiles clean under `/nologo /std:c11 /W3 /we4013 /utf-8`. Plan 03-03's
+include wiring should copy these verbatim.
+
+Four-tree representative set (the plan's acceptance run):
+
+    D:/miniconda3/python.exe devtools/msvc_compile_probe.py \
+      vendor/zlib/inflate.c vendor/bzip2/decompress.c vendor/regex/regcomp.c \
+      vendor/xz/src/liblzma/common/common.c \
+      -I vendor/zlib -I vendor/bzip2 -I vendor/regex -I vendor/xz/src/liblzma/api \
+      -I vendor/xz/src/liblzma/common -I vendor/xz/src/liblzma/check -I vendor/xz/src/liblzma/lz \
+      -I vendor/xz/src/liblzma/lzma -I vendor/xz/src/liblzma/delta -I vendor/xz/src/liblzma/simple \
+      -I vendor/xz/src/liblzma/rangecoder -I vendor/xz/src/common \
+      -D HAVE_STDINT_H=1 -D HAVE_INTTYPES_H=1 -D HAVE_STDBOOL_H=1 \
+      -D hidden= -D RE_DUP_MAX=255 -D CHARCLASS_NAME_MAX=14
+
+Full regex subset (all four TUs):
+
+    D:/miniconda3/python.exe devtools/msvc_compile_probe.py \
+      vendor/regex/regcomp.c vendor/regex/regexec.c vendor/regex/regerror.c vendor/regex/tre-mem.c \
+      -I vendor/regex -D hidden= -D RE_DUP_MAX=255 -D CHARCLASS_NAME_MAX=14
+
+xz decoder TU (stream_decoder.c, the `lzma_stream_decoder` entry htslib uses):
+
+    D:/miniconda3/python.exe devtools/msvc_compile_probe.py \
+      vendor/xz/src/liblzma/common/common.c vendor/xz/src/liblzma/common/stream_decoder.c \
+      -I vendor/xz/src/liblzma/api -I vendor/xz/src/liblzma/common -I vendor/xz/src/liblzma/check \
+      -I vendor/xz/src/liblzma/lz -I vendor/xz/src/liblzma/lzma -I vendor/xz/src/liblzma/delta \
+      -I vendor/xz/src/liblzma/simple -I vendor/xz/src/liblzma/rangecoder -I vendor/xz/src/common \
+      -D HAVE_STDINT_H=1 -D HAVE_INTTYPES_H=1 -D HAVE_STDBOOL_H=1

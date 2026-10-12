@@ -76,9 +76,13 @@ typedef wctype_t tre_ctype_t;
 
 /* Returns number of bytes to add to (char *)ptr to make it
    properly aligned for the type. */
+/* vendored adaptation (plan 03-02): the two casts below are 'size_t' on
+   MSVC/LLP64 (where 'long' is 32-bit and the upstream (long)ptr casts
+   truncate 64-bit pointers -- C4311); on musl's LP64 x86_64 target
+   size_t == unsigned long, so the arithmetic is unchanged there. */
 #define ALIGN(ptr, type) \
-  ((((long)ptr) % sizeof(type)) \
-   ? (sizeof(type) - (((long)ptr) % sizeof(type))) \
+  ((((size_t)ptr) % sizeof(type)) \
+   ? (sizeof(type) - (((size_t)ptr) % sizeof(type))) \
    : 0)
 
 #undef MAX

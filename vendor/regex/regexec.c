@@ -993,8 +993,13 @@ tre_fill_pmatch(size_t nmatch, regmatch_t pmatch[], int cflags,
 */
 
 int
+/* vendored adaptation (plan 03-02): upstream declares 'regmatch_t
+   pmatch[restrict]' -- a C99/C11 array-parameter qualifier MSVC rejects
+   (same gap class as htslib/hts_internal.h's '[static N]', dropped in
+   03-01). The qualifier is a pure aliasing hint; the empty-bracket form
+   decays to the same 'regmatch_t *' as regex.h's prototype. */
 regexec(const regex_t *restrict preg, const char *restrict string,
-	  size_t nmatch, regmatch_t pmatch[restrict], int eflags)
+	  size_t nmatch, regmatch_t pmatch[], int eflags)
 {
   tre_tnfa_t *tnfa = (void *)preg->TRE_REGEX_T_FIELD;
   reg_errcode_t status;
