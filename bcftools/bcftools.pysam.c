@@ -56,7 +56,18 @@ int bcftools_puts(const char *s)
 }
 
 
+#ifdef _WIN32
+/* pysam Windows port (Phase 2): UCRT longjmp() unwinds via RtlUnwindEx,
+   which raises STATUS_BAD_STACK when it walks the GCC-compiled frames of
+   this module, so exit interception crashes the interpreter.  GCC's
+   builtins restore the saved registers directly with no SEH unwind,
+   which is safe within this translation unit (setjmp and longjmp
+   callers both live here).  POSIX builds keep the standard
+   setjmp/longjmp below. */
+static void *bcftools_jmpbuf[5];
+#else
 static jmp_buf bcftools_jmpbuf;
+#endif
 static int bcftools_status = 0;
 
 int bcftools_dispatch(int argc, char *argv[])
@@ -70,14 +81,25 @@ int bcftools_dispatch(int argc, char *argv[])
   optind = 1;
 #endif
 
+#ifdef _WIN32
+  if (__builtin_setjmp(bcftools_jmpbuf) == 0)
+    return bcftools_main(argc, argv);
+  else
+    return bcftools_status;
+#else
   if (setjmp(bcftools_jmpbuf) == 0)
     return bcftools_main(argc, argv);
   else
     return bcftools_status;
+#endif
 }
 
 void bcftools_exit(int status)
 {
   bcftools_status = status;
+#ifdef _WIN32
+  __builtin_longjmp(bcftools_jmpbuf, 1);
+#else
   longjmp(bcftools_jmpbuf, 1);
+#endif
 }

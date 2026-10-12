@@ -575,14 +575,19 @@ static ssize_t fd_write(hFILE *fpv, const void *buffer, size_t nbytes)
     } while (n < 0 && errno == EINTR);
 #ifdef _WIN32
         // On windows we have no SIGPIPE.  Instead write returns
-        // EINVAL.  We check for this and our fd being a pipe.
-        // If so, we raise SIGTERM instead of SIGPIPE.  It's not
-        // ideal, but I think the only alternative is extra checking
-        // in every single piece of code.
+        // EINVAL when the pipe's read end has gone away.  Upstream
+        // htslib raises SIGTERM here to emulate SIGPIPE's default
+        // terminate action, but inside an embedded interpreter
+        // (CPython sets SIGPIPE to SIG_IGN on POSIX) that signal
+        // kills the whole host process.  pysam's Windows port
+        // instead reports the failure the way POSIX write(2) does -
+        // errno EPIPE with an error return - so callers see the
+        // same error flow on every platform.  (pysam portability
+        // patch, Phase 2; POSIX builds never compile this block.)
         if (n < 0 && errno == EINVAL &&
             GetLastError() == ERROR_NO_DATA &&
             GetFileType((HANDLE)_get_osfhandle(fp->fd)) == FILE_TYPE_PIPE) {
-            raise(SIGTERM);
+            errno = EPIPE;
         }
 #endif
     return n;

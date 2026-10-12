@@ -56,7 +56,18 @@ int samtools_puts(const char *s)
 }
 
 
+#ifdef _WIN32
+/* pysam Windows port (Phase 2): UCRT longjmp() unwinds via RtlUnwindEx,
+   which raises STATUS_BAD_STACK when it walks the GCC-compiled frames of
+   this module, so exit interception crashes the interpreter (seen with
+   usage() of depth/flagstat/stats/idxstats/reheader).  GCC's builtins
+   restore the saved registers directly with no SEH unwind, which is
+   safe within this translation unit (setjmp and longjmp callers both
+   live here).  POSIX builds keep the standard setjmp/longjmp below. */
+static void *samtools_jmpbuf[5];
+#else
 static jmp_buf samtools_jmpbuf;
+#endif
 static int samtools_status = 0;
 
 int samtools_dispatch(int argc, char *argv[])
@@ -70,14 +81,25 @@ int samtools_dispatch(int argc, char *argv[])
   optind = 1;
 #endif
 
+#ifdef _WIN32
+  if (__builtin_setjmp(samtools_jmpbuf) == 0)
+    return samtools_main(argc, argv);
+  else
+    return samtools_status;
+#else
   if (setjmp(samtools_jmpbuf) == 0)
     return samtools_main(argc, argv);
   else
     return samtools_status;
+#endif
 }
 
 void samtools_exit(int status)
 {
   samtools_status = status;
+#ifdef _WIN32
+  __builtin_longjmp(samtools_jmpbuf, 1);
+#else
   longjmp(samtools_jmpbuf, 1);
+#endif
 }
