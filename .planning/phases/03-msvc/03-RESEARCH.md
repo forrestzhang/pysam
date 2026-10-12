@@ -470,7 +470,7 @@ Undef: HAVE_ATTRIBUTE_CONSTRUCTOR, HAVE_BUILTIN_CPU_SUPPORT_SSSE3,
 | A9 | The Phase-2 test infrastructure (Python data generators, in-process oracles, conftest os.pathsep, threading httpserver) is keyed on `sys.platform == 'win32'` and therefore works unchanged under the miniconda/MSVC env | Requirements map | If any piece is MSYSTEM-keyed instead, it needs a guard relaxation — discovered at first suite run; 02-RESEARCH indicates sys.platform keying |
 | A10 | MSVC toolset 14.50-built extensions are ABI-safe for the CPython 3.13 they were built against (local validation) — toolset unification with python.org-built CPython wheels is a Phase 4 CI concern | Environment | None for Phase 3 SC-2; Phase 4 may pin v143 on runners |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **bzip2/lzma: vendor for parity, or disable for scope?** (A2)
    - What we know: UCRT64 baseline has both enabled (`LIBS = -lregex -llzma -lbz2 -lws2_32 -lz` — verified this session); htslib degrades gracefully without them; vendoring adds ~50 TUs of well-trodden MSVC-portable code.
