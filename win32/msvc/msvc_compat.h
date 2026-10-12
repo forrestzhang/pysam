@@ -211,18 +211,19 @@ typedef long long off_t;
 #define getcwd(buf, size)              _getcwd((buf), (size))
 #define mktemp(template)               _mktemp(template)
 #define strdup(s)                      _strdup(s)
-/* fd syscall family. read/write/close carry the exact bodies of the
-   unistd.h drop-in (identical macro redefinition is legal C, so TUs
-   that include <unistd.h> see one definition either way); open and
-   setmode complete the set for zlib's gz* TUs and hfile.c, which used
-   to rely on the non-stdc declarations under the open gate. Every bare
-   open() call site in the trees takes exactly 3 arguments (hfile.c,
-   tmp_file.c, reheader.c, gzlib.c) -- MSVC's _open signature. */
-#define open(path, oflag, mode)        _open((path), (oflag), (mode))
+/* fd syscall family. setmode maps as a macro (no struct member in the
+   trees uses the name). read/write/close/open are DECLARED, not
+   mapped: the UCRT still exports the legacy spellings (proven by the
+   03-04 link: zlib's gz* TUs bound implicit-decl read/write refs), and
+   macros would mangle member accesses -- hfile.c calls
+   hFILE_backend->read/write/close function pointers (C2039 under a
+   macro, first out-of-tree build). TUs that include <unistd.h> still
+   see the fixed-arity _read/_write/_close macros from the drop-in. */
 #define setmode(fd, mode)              _setmode((fd), (mode))
-#define read(fd, buf, count)           _read((fd), (buf), (count))
-#define write(fd, buf, count)          _write((fd), (buf), (count))
-#define close(fd)                      _close((fd))
+int open(const char *path, int oflag, ...);
+int read(int fd, void *buffer, unsigned int count);
+int write(int fd, const void *buffer, unsigned int count);
+int close(int fd);
 /* fcntl open(2) flags, same non-stdc-gated story (fcntl.h defines the
    plain spellings only under the internal gate; the _O_* originals are
    unconditional). O_BINARY is a project red line for binary formats.
