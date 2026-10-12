@@ -103,3 +103,8 @@ _venv/
 
 # MSVC dev venv (BUILD-02; created from win-amd64 CPython, see devtools/msvc-build.md)
 _venv-msvc/
+
+# MSVC build products beside the inplace extensions (BUILD-02: import
+# libraries + export files emitted next to the .pyd via /IMPLIB:)
+pysam/*.lib
+pysam/*.exp
