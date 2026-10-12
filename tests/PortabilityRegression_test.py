@@ -11,9 +11,12 @@ This module is self-contained (pytest tmp_path only; no make_data_files
 dependency, no subprocess/shell usage, no network access).
 '''
 
+import gzip
 import os
 
 import pysam
+
+from TestUtils import checkBinaryEqual, checkGZBinaryEqual
 
 
 CJK_DIR_NAME = u"数据目录"
@@ -41,21 +44,25 @@ def make_cjk_dir(tmp_path):
     return d
 
 
+def _write_records(outf, n, prefix="read_"):
+    for i in range(n):
+        a = pysam.AlignedSegment(outf.header)
+        a.query_name = "%s%d" % (prefix, i)
+        a.query_sequence = "ACGT"
+        a.query_qualities = pysam.qualitystring_to_array("IIII")
+        a.reference_id = 0
+        a.reference_start = 100 + i
+        a.mapping_quality = 60
+        a.cigarstring = "4M"
+        outf.write(a)
+
+
 def make_cjk_bam(tmp_path):
     '''Write a 2-record BAM under a CJK-named directory; return its path.'''
     cjk_dir = make_cjk_dir(tmp_path)
     bam_path = os.path.join(cjk_dir, CJK_BAM_NAME)
     with pysam.AlignmentFile(bam_path, "wb", header=BAM_HEADER) as outf:
-        for i in range(2):
-            a = pysam.AlignedSegment(outf.header)
-            a.query_name = u"读段_%d" % i
-            a.query_sequence = "ACGT"
-            a.query_qualities = pysam.qualitystring_to_array("IIII")
-            a.reference_id = 0
-            a.reference_start = 100 + i
-            a.mapping_quality = 60
-            a.cigarstring = "4M"
-            outf.write(a)
+        _write_records(outf, 2, prefix=u"读段_")
     return bam_path
 
 
@@ -125,3 +132,120 @@ class TestCJKPathCanary:
         assert header
         assert "@HD" in header
         assert "SQ" in header
+
+
+class TestBinaryMode:
+    '''D2-08: permanent byte-level binary-mode regression tests.
+
+    Windows text-mode I/O translates \\n to/from \\r\\n at the CRT layer and
+    silently corrupts BAM/BGZF/SAM data. Every public writer that touches a
+    file path is asserted here at the byte level, so any future text-mode
+    regression fails the regular suite instead of corrupting data.
+
+    All assertions describe properties that hold on every platform, so this
+    class is platform-neutral by construction (POSIX green = no regression).
+    '''
+
+    def test_sam_text_write_is_lf_only(self, tmp_path):
+        sam_path = os.path.join(str(tmp_path), "out.sam")
+        with pysam.AlignmentFile(sam_path, "w", header=BAM_HEADER) as outf:
+            _write_records(outf, 2)
+
+        with open(sam_path, "rb") as inf:
+            data = inf.read()
+        assert b"\r\n" not in data
+        # 2 header lines (@HD + @SQ) + 2 records, each LF-terminated
+        assert data.count(b"\n") == 4
+
+        with pysam.AlignmentFile(sam_path, "r") as inf:
+            assert len(list(inf.fetch(until_eof=True))) == 2
+
+    def test_dispatch_save_stdout_is_lf_only(self, tmp_path):
+        sam_path = os.path.join(str(tmp_path), "in.sam")
+        with pysam.AlignmentFile(sam_path, "w", header=BAM_HEADER) as outf:
+            _write_records(outf, 2)
+
+        # flagstat is the dispatch command whose output actually flows
+        # through the libcutils save_stdout redirect fd (samtools view
+        # writes via htslib '-' -> fd 1 on every platform, so its
+        # save_stdout file is always empty -- verified below as well).
+        out_flagstat = os.path.join(str(tmp_path), "flagstat.txt")
+        pysam.samtools.flagstat(sam_path, save_stdout=out_flagstat)
+        with open(out_flagstat, "rb") as inf:
+            data = inf.read()
+        assert data
+        assert b"\r\n" not in data
+
+        out_view = os.path.join(str(tmp_path), "view.txt")
+        pysam.samtools.view("-h", sam_path, save_stdout=out_view)
+        with open(out_view, "rb") as inf:
+            data = inf.read()
+        assert b"\r\n" not in data
+
+    def test_tabix_compress_is_byte_faithful(self, tmp_path):
+        payload = b"AB\r\n" * 50 + b"END"
+        src = os.path.join(str(tmp_path), "src.txt")
+        dst = os.path.join(str(tmp_path), "dst.gz")
+        with open(src, "wb") as inf:
+            inf.write(payload)
+
+        pysam.tabix_compress(src, dst)
+        with gzip.open(dst, "rb") as inf:
+            assert inf.read() == payload
+
+    def test_bam_write_roundtrip_and_bgzf_magic(self, tmp_path):
+        bam_path = os.path.join(str(tmp_path), "out.bam")
+        with pysam.AlignmentFile(bam_path, "wb", header=BAM_HEADER) as outf:
+            _write_records(outf, 3)
+
+        with open(bam_path, "rb") as inf:
+            head = inf.read(18)
+        assert head[:4] == b"\x1f\x8b\x08\x04"
+        assert head[12:14] == b"BC"
+
+        with pysam.AlignmentFile(bam_path, "rb") as inf:
+            assert len(list(inf.fetch(until_eof=True))) == 3
+
+    def test_vcf_and_bcf_write_roundtrip(self, tmp_path):
+        src = os.path.join(str(tmp_path), "src.vcf")
+        with open(src, "wb") as inf:
+            inf.write(VCF_TEXT.encode("ascii"))
+
+        vcf_path = os.path.join(str(tmp_path), "out.vcf")
+        bcf_path = os.path.join(str(tmp_path), "out.bcf")
+        with pysam.VariantFile(src) as vin:
+            header = vin.header
+            records = list(vin)
+            with pysam.VariantFile(vcf_path, "w", header=header) as vout:
+                for record in records:
+                    vout.write(record)
+            with pysam.VariantFile(bcf_path, "wb", header=header) as vout:
+                for record in records:
+                    vout.write(record)
+
+        with open(vcf_path, "rb") as inf:
+            vcf_data = inf.read()
+        assert b"\r\n" not in vcf_data
+
+        with open(bcf_path, "rb") as inf:
+            head = inf.read(18)
+        assert head[:4] == b"\x1f\x8b\x08\x04"
+        assert head[12:14] == b"BC"
+
+        with pysam.VariantFile(vcf_path) as v:
+            assert sum(1 for _ in v) == 2
+        with pysam.VariantFile(bcf_path) as v:
+            assert sum(1 for _ in v) == 2
+
+    def test_double_tabix_compress_deterministic(self, tmp_path):
+        payload = b"AB\r\n" * 50 + b"END"
+        src = os.path.join(str(tmp_path), "src.txt")
+        dst1 = os.path.join(str(tmp_path), "dst1.gz")
+        dst2 = os.path.join(str(tmp_path), "dst2.gz")
+        with open(src, "wb") as inf:
+            inf.write(payload)
+
+        pysam.tabix_compress(src, dst1)
+        pysam.tabix_compress(src, dst2)
+        assert checkBinaryEqual(dst1, dst2) is True
+        assert checkGZBinaryEqual(dst1, dst2) is True
