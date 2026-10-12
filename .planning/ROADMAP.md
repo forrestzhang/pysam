@@ -90,7 +90,7 @@ Plans:
   2. MSVC 构建产物上 `import pysam` 成功，且完整测试套件全绿
   3. 单一集中 MSVC shim 头文件覆盖 C99/VLA 缺口（无逐文件打地鼠）；按研究标志完成 clang-cl 回退路径评估
 
-**Plans:** 3/5 plans executed
+**Plans:** 4/5 plans executed
 
 Plans:
 **Wave 1** *(parallel — no file overlap)*
@@ -104,7 +104,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2)*
 
-- [ ] 03-04-PLAN.md — 首次全量 MSVC 构建（tracer）+ import/BAM/dispatch 冒烟 + out-of-tree D-17 实证 + UCRT64 零回归中间检查
+- [x] 03-04-PLAN.md — 首次全量 MSVC 构建（tracer）+ import/BAM/dispatch 冒烟 + out-of-tree D-17 实证 + UCRT64 零回归中间检查
 
 **Wave 4** *(blocked on Wave 3)*
 
@@ -140,7 +140,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 |-------|----------------|--------|-----------|
 | 1. MinGW-w64 构建系统 | 3/3 | Complete    | 2026-10-01 |
 | 2. 可移植性加固与测试全绿 | 4/4 | Complete    | 2026-10-12 |
-| 3. MSVC 构建系统 | 3/5 | In Progress | - |
+| 3. MSVC 构建系统 | 4/5 | In Progress | - |
 | 4. Windows CI 与 wheel 分发 | 0/TBD | Not started | - |
 
 ---

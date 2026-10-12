@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 03
 current_phase_name: MSVC 构建系统
 status: executing
-stopped_at: Completed 03-03-PLAN.md
-last_updated: "2026-10-12T13:28:28.690Z"
+stopped_at: Completed 03-04-PLAN.md
+last_updated: "2026-10-12T15:36:11.380Z"
 last_activity: 2026-10-12
 last_activity_desc: Phase 03 execution started
-state_head: 465adb7e15e1cb3e46587a7da6f05015c8ae970b
+state_head: 684b0912c263e46d8b074bb367d11dcab8ee296f
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 12
-  completed_plans: 10
+  completed_plans: 11
   percent: 50
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-12)
 ## Current Position
 
 Phase: 03 (MSVC 构建系统) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
 Last activity: 2026-10-12 — Phase 03 execution started
 
@@ -69,6 +69,7 @@ Progress: [█████░░░░░] 50%
 | Phase 03 P01 | 28 min | 3 tasks | 9 files |
 | Phase 03 P02 | 26 min | 3 tasks | 219 files |
 | Phase 03 P03 | 26 min | 3 tasks | 12 files |
+| Phase 03 P04 | 118 min | 3 tasks | 21 files |
 
 ## Accumulated Context
 
@@ -101,6 +102,10 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-02: xz 5.8.4 consumes a no-config route (-DHAVE_STDINT_H/-DHAVE_INTTYPES_H/-DHAVE_STDBOOL_H) — its windows/ dir is docs-only in 5.8.4 (MSVC builds moved to CMake); the define set is the recorded configuration base for 03-03
 - [Phase 03]: 03-02: musl regex internal-header fan-out neutralized by 2 glue adaptations (regex.h stddef/regoff_t; locale_impl.h LCTRANS_CUR identity shim) — 0 real musl-internal headers vendored, TRE fallback not triggered; define set hidden= + RE_DUP_MAX=255 + CHARCLASS_NAME_MAX=14
 - [Phase 03]: 03-02: two genuine-MSVC-gap compat edits recorded in vendor/regex — regexec.c [restrict] array-param qualifier dropped (hts_internal.h [static] precedent); tre.h ALIGN (long)->(size_t) for win64 LLP64 (C4311 truncation)
+- [Phase 03]: [Phase 03-04]: MSVC cross-module binding = HTSLIB_EXPORT dllimport consumer arm (hts_defs.h, _MSC_VER-gated) + /DEF lists + lib-prefixed internal names — link.exe has no auto-import for data (seq_nt16_*), and the /FI shim cannot win: MSVC takes the LAST declaration's linkage
+- [Phase 03]: [Phase 03-04]: MSVC arm uses /GL- (distutils /GL+/LTCG ICEs the cl 14.50 backend on filter_decoder.c; upstream xz MSVC builds never use /GL) and /std:c11 /utf-8 via extra_compile_args — set_executables is a no-op under MSVCCompiler
+- [Phase 03]: [Phase 03-04]: win32/msvc/msvc_compat.h closes _CRT_DECLARE_NONSTDC_NAMES (stdlib min/max macros collided with the trees' own functions; the open gate's off_t is 32-bit) — every legacy POSIX name now maps to an always-declared underscore spelling; the fd trio is declared, not mapped (macros mangled hFILE_backend->read member calls)
+- [Phase 03]: [Phase 03-04]: xz consumes the full autotools-equivalent feature define set; the bare 3-define route left decoders[] empty (cl ICE) and the HAVE_SMALL/mt/tablegen TUs are excluded from the module graph; -Dhidden= dropped globally (tre.h compat edit 2)
 
 ### Pending Todos
 
@@ -122,6 +127,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T13:28:28.640Z
-Stopped at: Completed 03-03-PLAN.md
+Last session: 2026-10-12T15:36:11.325Z
+Stopped at: Completed 03-04-PLAN.md
 Resume file: None
