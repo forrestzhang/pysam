@@ -18,6 +18,7 @@ extracted sources and license files (reviewable as diffs).
 | vendor/zlib | zlib (Madler) | 1.3.2 | https://zlib.net/zlib-1.3.2.tar.gz | `bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16` | vendor/zlib/LICENSE | **cross-checked**: identical value published on https://www.zlib.net/ index page. (The zlib-announce 1.3.2 post links to zlib.net/GitHub without listing a hash; zlib.net's own index is the publication point that carried it.) |
 | vendor/bzip2 | bzip2 (sourceware) | 1.0.8 | https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz | `ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269` | vendor/bzip2/LICENSE | **cross-checked on SHA-512**: publisher publishes SHA-512 only (https://sourceware.org/pub/bzip2/sha512.sum); computed SHA-512 matches the published line for 1.0.8 (`083f5e67...8a30b9f3`). SHA-256 above is our recorded value. |
 | vendor/xz | XZ Utils (tukaani) | 5.8.4 | https://github.com/tukaani-project/xz/releases/download/v5.8.4/xz-5.8.4.tar.gz (linked as the official release artifact from https://tukaani.org/xz/) | `0014c7886930454fe8bd4228665b51af55eeae560ea135c9c4cd33f55b2591d9` | vendor/xz/COPYING (+ COPYING.0BSD, COPYING.GPLv2, COPYING.GPLv3, COPYING.LGPLv2.1) | **cross-checked**: identical value published as the release asset digest on the official tukaani-project/xz v5.8.4 release. |
+| vendor/regex | musl libc (regex subset) | 1.2.6 | https://musl.libc.org/releases/musl-1.2.6.tar.gz | `d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a` | vendor/regex/COPYRIGHT (MIT) | **NOT cross-checked — no upstream checksum published** (musl publishes only a GPG signature; no sha256/md5 file exists on musl.libc.org). Hash recorded from the official-URL download at extraction time; flagged per T-03-04, never silently trusted. |
 
 Re-verification (offline, any machine): re-download the tarball from the origin
 URL above, then `sha256sum <tarball>` and compare against vendor/HASHES.txt.
@@ -81,3 +82,52 @@ Kept beyond the strict minimum:
   `MYTHREAD_VISTA`); htslib drives liblzma single-threaded through
   `lzma_stream_decoder`. Exact probe command lines proven in plan 03-02
   Task 3 are appended at the bottom of this file.
+
+## vendor/regex (musl-derived POSIX regex)
+
+Per 03-RESEARCH Q2/A3 (adopted): the MSVC path vendors musl 1.2.6's
+regcomp/regexec implementation (MIT) because htslib's filter expressions
+(`hts_expr.c:37`, `sam.c:39` — unconditional `#include <regex.h>`) need real
+POSIX BRE/ERE semantics (`REG_EXTENDED`, `REG_NOSUB`, `regerror` strings) that
+MSVC has no native provider for. TRE (LGPL, what htslib-msvc pulls via vcpkg)
+remains the documented fallback if filter tests disagree in plan 03-05.
+
+Files and their provenance state:
+
+| File | State |
+|------|-------|
+| regcomp.c, regexec.c, regerror.c, tre-mem.c, tre.h, COPYRIGHT | **byte-identical** to musl 1.2.6 (`src/regex/*`, top-level `COPYRIGHT`) |
+| regex.h | **adapted** — the only adapted file; see below |
+| locale_impl.h | **vendored shim** (not upstream content) — see below |
+
+- `regfree` is *not* a separate TU in musl 1.2.6: it is defined inside
+  `regcomp.c` (regfree coverage therefore present in-TU). `tre-mem.c` is the
+  fourth required TU (`regcomp.c` calls the `tre_mem_*` allocator 37 times).
+  `fnmatch.c`/`glob.c` in the same upstream directory are unrelated APIs and
+  were not vendored.
+
+- **regex.h adaptation** (upstream `include/regex.h` includes the
+  musl-internal `<features.h>` + `<bits/alltypes.h>`, the latter generated
+  per-arch at musl build time): replaced by `#include <stddef.h>` (size_t) +
+  `typedef long regoff_t;` — exactly musl's x86_64 definition
+  (`TYPEDEF _Addr regoff_t`, `_Addr` = `long`). Everything below the
+  adaptation marker is byte-identical to upstream.
+
+- **locale_impl.h shim**: upstream `regerror.c` includes musl's internal
+  `locale_impl.h` solely for `LCTRANS_CUR(s)`, whose default C-locale
+  behavior upstream is the identity function (the weak `__lctrans_impl`
+  dummy in `src/locale/__lctrans.c` returns its argument unchanged). The
+  shim defines `LCTRANS_CUR(msg) (msg)` and nothing else. It exists instead
+  of vendoring the real header because the real one chains into `libc.h` +
+  `pthread_impl.h` and the musl TLS runtime (`__pthread_self()->locale`) —
+  unbuildable outside musl. Total musl-internal glue neutralized: 2 glue
+  points, 0 real internal headers vendored, 0 upstream logic changes; the
+  TRE fallback (LGPL implications) was therefore not triggered.
+
+The four TUs contain no GNU extensions and no VLAs (scanned: `__attribute__`,
+`__thread`, `weak_alias`, `__builtin`, `__asm__`, `__GNUC__`, variable-length
+arrays — all zero hits). Compile with `-I vendor/regex`; no configuration
+header and no defines are required.
+
+The UCRT64 path is NOT touched by this tree — it keeps linking the MSYS2
+`-lregex` package; `vendor/regex/` exists for the MSVC module graph only.
