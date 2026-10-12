@@ -22,77 +22,115 @@ a strict hygiene improvement and a behavioral no-op on POSIX (handler lifetime
 is otherwise invisible to the assertions). No `.pyx` change was needed; the
 C-level stderr noise (`[E::bgzf_read] ... error 4` on `ex9_fail.bam` pileup)
 belongs to the expected htslib error path the test intentionally exercises
-and does not affect the result.
+and does not affect the result (the same stderr line appears in the ubuntu CI
+logs on passing builds).
 
 **Post-fix evidence** (`pytest tests/AlignmentFile_test.py -k "TestLogging or
 testReadingFromFileWithoutIndex" -v`): `4 passed, 365 deselected in 0.16s`,
 teardown clean, `log.txt` absent after the run.
 
-## 2. Counts table — both platforms, same SHA
+## 2. Counts table — both platforms, same SHA (phase-final code commit `d912a1df`)
 
-**Windows session (UCRT64, Python 3.14.7, default collection, phase-final working tree):**
+**Windows session (UCRT64, Python 3.14.7, default collection, tree at `d912a1df`):**
 
 ```
-====================== 1027 passed, 15 skipped in 15.22s ======================
+====================== 1027 passed, 15 skipped in 15.38s ======================
 ```
 
-(captured verbatim from `_venv/bin/python.exe -m pytest -rs`, exit code 0; the
-first plain run of the same tree reported `1027 passed, 15 skipped in 16.30s`).
-Collection count: `1040 tests collected in 2.46s`.
+(captured verbatim from `_venv/bin/python.exe -m pytest`, exit code 0; the
+`-rs` rerun of the same tree reported `1027 passed, 15 skipped in 15.22s`).
+Collection: `1040 tests collected in 2.46s` (plus two module-level skip
+placeholders — linking, typechecking — that execute as skip units, so pytest's
+run accounting counts them among the 15 skipped).
 
-Collection-drift finding (investigated per plan): research baseline was 1028;
-this phase itself added 12 test functions (`tests/PortabilityRegression_test.py`
-×11 — D2-08/D2-10 regression suite — plus `test_compile_sizes_static_asserts`
-in `tests/compile_test.py` — D2-09), zero removed: 1028 + 12 = 1040. Zero
-duplicate node ids, zero deselected; every parseable run id is a subset of the
-collected ids. Observed anomaly, investigated and recorded: the run summary
-counts 1042 executions (1027 passed + 15 skipped) against 1040 collected; 52
-`-v` status lines are absent from the run log in parseable form because
-dispatch fd-1 redirection swallows them mid-run (the documented `-s` capture
-constraint) — deselection and duplication, the gate's failure modes, are both
-empirically excluded.
+**fork CI ubuntu job, direct matrix cell (ubuntu, 3.14) — same SHA `d912a1df`, run 38220111717:**
 
-**fork CI ubuntu job (same commit SHA):** *(populated in Task 3 from the job
-log on the phase-final SHA — quoted verbatim, never model-recalled)*
+```
+================= 1042 passed, 5 skipped, 2 warnings in 24.65s =================
+```
 
-## 3. Skip-reason diff — Windows `-rs` listing vs ubuntu job
+(quoted verbatim from the job log; collection line `collected 1046 items / 1
+skipped` — the `/1` is the linking module placeholder). Cell 3.14 chosen to
+match the Windows session's Python 3.14.7; the other ubuntu cells report the
+same shape (3.11 additionally skips one invalid-access test known to crash
+there, `1041 passed, 6 skipped`).
 
-Windows `-rs` listing, complete (15 skips, each with its printed reason):
+**Node-level reconciliation (both sides enumerated, not estimated):** the
+Windows collected-id set (1040) and the ubuntu executed-id set differ in
+exactly one module — `tests/typechecking_test.py`, which collects 6 real tests
+on ubuntu (mypy installed by ci.yaml) and one module-skip placeholder on
+Windows (mypy absent from the UCRT64 venv): 1040 + 6 = 1046. Collection-drift
+finding vs the research baseline: this phase itself added 12 test functions
+(`tests/PortabilityRegression_test.py` ×11 — D2-08/D2-10 — plus
+`test_compile_sizes_static_asserts` — D2-09), zero removed. Zero duplicate
+node ids, zero deselected, every parseable Windows run id is a subset of the
+collected ids; 52 `-v` status lines are absent from the Windows run log in
+parseable form because dispatch fd-1 redirection swallows them mid-run (the
+documented `-s` capture constraint) — the gate's failure modes
+(deselection/duplication) are empirically excluded.
 
-| Site (as printed) | Reason (as printed) | Class |
+## 3. Skip-reason diff — Windows `-rs` listing vs ubuntu job (same SHA)
+
+Every skip on either side, each individually named. Threshold per the chosen
+mechanics: zero unexplained differences — met.
+
+**Both platforms (identical reason):**
+
+| Test | Reason | Evidence |
 |---|---|---|
-| `tests/linking_test.py:13` | enable linking tests by setting PYSAM_LINKING_TESTS environment variable | env gate (opt-in on both platforms) |
-| `tests/typechecking_test.py:17` | mypy API not available | env gate (dependency absent) |
-| `tests/AlignmentFile_test.py:1389` | networking disabled | libcurl-gated remote I/O (v1 pre-locked) |
-| `tests/AlignmentFile_test.py:1398` | networking disabled | libcurl-gated remote I/O |
-| `tests/AlignmentFile_test.py:1411` | networking disabled | libcurl-gated remote I/O |
-| `tests/AlignmentFile_test.py:1425` | GCS networking disabled | libcurl-gated remote I/O |
-| `tests/AlignmentFile_test.py:1434` | S3 networking disabled | libcurl-gated remote I/O |
-| `tests/AlignmentFile_test.py:2066` | fails on linux - https issue? | unconditional upstream skip, both platforms |
-| `tests/StreamFiledescriptors_test.py:74` | test contains bug | unconditional upstream skip, both platforms |
-| `tests/faidx_test.py:222` | networking disabled | libcurl-gated remote I/O |
-| `tests/faidx_test.py:226` | networking disabled | libcurl-gated remote I/O |
-| `tests/tabix_test.py:911` ×2 | networking disabled | libcurl-gated remote I/O (parametrized pair) |
-| `tests/tabix_test.py:927` ×2 | networking disabled | libcurl-gated remote I/O (parametrized pair) |
+| `tests/linking_test.py` (module) | enable linking tests by setting PYSAM_LINKING_TESTS environment variable | opt-in env gate; not set in either environment (Windows `-rs` line `tests/linking_test.py:13`; ubuntu collection `/1 skipped`) |
+| `tests/AlignmentFile_test.py::TestLargeCigar::test_reading_writing_cram` | fails on linux - https issue? | unconditional upstream skip; SKIPPED line present in both logs |
+| `tests/StreamFiledescriptors_test.py::TestStream::test_samtools_processing` | test contains bug | unconditional upstream skip; SKIPPED line present in both logs |
 
-*(ubuntu-side diff of these rows against the job log is completed in Task 3;
-every row must end as "both platforms (identical reason)" or gain an exemption
-entry below.)*
+**Windows-only skips (11 + 1 module — each links to an exemption entry in section 4):**
+
+| Test | Reason | ubuntu status |
+|---|---|---|
+| `tests/AlignmentFile_test.py::TestRemoteFileHTTP::testView` | networking disabled (HAVE_LIBCURL=0) | PASSED |
+| `tests/AlignmentFile_test.py::TestRemoteFileHTTP::testFetch` | networking disabled | PASSED |
+| `tests/AlignmentFile_test.py::TestRemoteFileHTTP::testFetchAll` | networking disabled | PASSED |
+| `tests/AlignmentFile_test.py::test_remote_GCS` | GCS networking disabled (ENABLE_GCS=0) | PASSED |
+| `tests/AlignmentFile_test.py::test_remote_S3` | S3 networking disabled (ENABLE_S3=0) | PASSED |
+| `tests/faidx_test.py::TestRemoteFile::test_fetch` | networking disabled | PASSED |
+| `tests/faidx_test.py::TestRemoteFile::test_sequence_lengths_are_available` | networking disabled | PASSED |
+| `tests/tabix_test.py::TestRemoteFileHTTP::testFetchAll[example]` | networking disabled | PASSED |
+| `tests/tabix_test.py::TestRemoteFileHTTP::testFetchAll[example_comments]` | networking disabled | PASSED |
+| `tests/tabix_test.py::TestRemoteFileHTTP::testHeader[example]` | networking disabled | PASSED |
+| `tests/tabix_test.py::TestRemoteFileHTTP::testHeader[example_comments]` | networking disabled | PASSED |
+| `tests/typechecking_test.py` (module; 6 real tests on ubuntu) | mypy API not available | PASSED (×6) |
+
+**ubuntu-only skips (Windows runs these — explained, no action):**
+
+| Test | Reason | Windows status |
+|---|---|---|
+| `tests/samtools_test.py::TestSamtools::testUsage` | skipping usage tests, stdin is not a tty | PASSED (UCRT64 session stdin is a tty) |
+| `tests/samtools_test.py::TestPysam::testUsage` | skipping usage tests, stdin is not a tty | PASSED |
+
+Arithmetic check: Windows 1027 passed = 1040 nodes − 13 node-level skips;
+ubuntu 1042 passed = 1046 nodes − 4 node-level skips. All deltas accounted
+for by the rows above.
 
 ## 4. D2-07 exemption list — Windows-only skips/xfails granted this phase
 
-**Zero exemptions granted.** The four D2-07 checklist names were all resolved
-by pass/fix (section 1). All 15 skips in the Windows run belong to pre-existing
-classes present on both platforms (unconditional upstream skips, opt-in env
-gates) or to the v1 pre-locked libcurl-disabled constraint (remote-I/O skipif
-sites — expected Windows skips per CONTEXT). Audit evidence: phase 02's whole
-diff (`c3541873..HEAD`) added exactly one skip mark — the conditional
+The four D2-07 checklist names were all resolved by pass/fix (section 1) — no
+exemption was needed for any of them. The rows below are the Windows-only
+skip surface named in section 3, each with its written cause, evidence
+pointer, and decision date. Audit evidence: phase 02's whole diff
+(`c3541873..HEAD`) added exactly one skip mark — the conditional
 `@pytest.mark.skipif(NO_PYXIMPORT, reason="no pyximport")` (02-02, D2-09
-gate) — removed none, and touched neither pre-existing unconditional skip
-(`AlignmentFile_test.py` "fails on linux", `StreamFiledescriptors_test.py`
-"test contains bug", both present verbatim at the phase-start commit).
+gate) — removed none, and touched neither pre-existing unconditional skip.
 
 | Test id | Cause (written) | Evidence | Date |
 |---------|-----------------|----------|------|
-| *(none — zero Windows-only skips exist beyond the pre-existing/pre-locked classes)* | | | |
+| `tests/AlignmentFile_test.py::TestRemoteFileHTTP` (testView, testFetch, testFetchAll) | v1 pre-locked libcurl-disabled constraint (PROJECT decision: remote I/O deferred to v2); capability gate `skipif(not HAVE_LIBCURL)` present in upstream code, unchanged by this phase | Windows `-rs` lines `AlignmentFile_test.py:1389/1398/1411`; ubuntu job log: PASSED | 2026-10-12 |
+| `tests/AlignmentFile_test.py::test_remote_GCS` / `test_remote_S3` | same v1 constraint (ENABLE_GCS/ENABLE_S3 both derive from libcurl plugins) | Windows `-rs` lines `1425/1434`; ubuntu: PASSED | 2026-10-12 |
+| `tests/faidx_test.py::TestRemoteFile` (test_fetch, test_sequence_lengths_are_available) | same v1 constraint | Windows `-rs` lines `faidx_test.py:222/226`; ubuntu: PASSED | 2026-10-12 |
+| `tests/tabix_test.py::TestRemoteFileHTTP` (testFetchAll, testHeader × 2 params) | same v1 constraint | Windows `-rs` lines `tabix_test.py:911/927` (SKIPPED [2] each); ubuntu: PASSED | 2026-10-12 |
+| `tests/typechecking_test.py` (module) | mypy not installed in the UCRT64 dev venv — test-environment dependency difference, not a pysam platform limitation (the 6 tests exercise typestub annotations only) | Windows `-rs` line `typechecking_test.py:17 mypy API not available`; ci.yaml installs mypy on ubuntu | 2026-10-12 |
 
+## 5. Zero-regression closure — fork CI on the phase-final code commit
+
+- **First push of the phase (`16b05567`, run [38217865780](https://github.com/forrestzhang/pysam/actions/runs/38217865780)): FAILURE** — exactly one test failing on each of `direct (ubuntu, 3.13)`, `sdist (ubuntu, 3.14)`, `system (freebsd)`: `TestRemoteFileHTTP::testView`, `Connection timed out` on the httpserver URL; `conda (ubuntu, 3.13)` (libcurl disabled) green.
+- **Root cause (found and fixed in this plan):** 02-03 had replaced the multiprocessing httpserver with a daemon-thread server on all platforms. `_pysam_dispatch` runs the samtools main with the GIL held (`samtools_dispatch` call in `pysam/libcutils.pyx`), so while the dispatch was blocked in libcurl waiting for the HTTP response, the in-process server thread could never run to answer — hence the timeout. The non-dispatch remote tests (libchtslib releases the GIL) passed, and a child-process server is immune — which is why upstream never saw this.
+- **Fix (commit `d912a1df`):** `tests/conftest.py` platform-split — POSIX branch restores upstream's `_httpd` + fixture body verbatim (byte-identical tokens, guard-required indentation only); win32 keeps the spawn-safe threading variant (02-03 decision; all libcurl-gated remote tests skip on that build, so the GIL interaction is unreachable there).
+- **Phase-final verdict (run [38220111717](https://github.com/forrestzhang/pysam/actions/runs/38220111717) on `d912a1df`): SUCCESS — all 19 jobs green**, including `direct (ubuntu, 3.9–3.15-dev)` ×7 cells, `direct (macos, 3.9–3.15-dev)` ×7 cells, `sdist (ubuntu/macOS, 3.14)`, `conda (ubuntu, 3.13)`, `system (freebsd/netbsd)` (BSD advisory per Phase 1 D-12 — also green). Zero-regression closed across all of phase 02 (`c3541873..d912a1df`).
