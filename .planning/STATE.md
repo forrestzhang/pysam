@@ -20,10 +20,10 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-01)
+See: .planning/PROJECT.md (updated 2026-10-12)
 
 **Core value:** Windows 用户能够 `pip install` 拿到 wheel 并正常使用 pysam 的全部功能（htslib API 绑定 + samtools/bcftools 命令封装），完整测试套件在 Windows 上通过。
-**Current focus:** Phase 02 — 可移植性加固与测试全绿
+**Current focus:** Phase 3 — MSVC 构建系统
 
 ## Current Position
 
@@ -116,4 +116,4 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 Last session: 2026-10-12T09:57:56.199Z
 Stopped at: Phase 02 complete, ready to plan Phase 3
-Resume file: .planning/phases/02-portability-tests/.continue-here.md
+Resume file: None

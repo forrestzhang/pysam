@@ -19,13 +19,12 @@ Windows 用户能够 `pip install` 拿到 wheel 并正常使用 pysam 的全部�
 - ✓ Linux/macOS 上通过 autotools/make 构建 bundled htslib/samtools/bcftools — existing
 - ✓ cibuildwheel 产出 Linux/macOS wheel（`ci.yaml`/`release.yaml`）— existing
 - ✓ MinGW-w64 (MSYS2) 下从源码完整构建 pysam（含 bundled htslib/samtools/bcftools）— Phase 1（UCRT64 单命令 bootstrap，13 扩展 + 13 导入库，BUILD-03 符号门带牙齿，D-16 getopt 隔离，ubuntu/macos CI 零回归）
+- ✓ Windows 可移植性加固 + 完整测试套件全绿 — Phase 2（libcport.pxd 单点平台映射清零 posix cimport；htslib 宽字符 open shim 使 CJK 路径可用；11 项字节保真回归测试防 text-mode 损坏；1027 passed / 15 skipped / 0 failed，TEST-02 对账零静默 skip；fork CI 19/19 全绿；上游 4 个已知失败中 1 个直接通过、3 个根因修复；PORT-01..04 + TEST-01/02）
 
 ### Active
 
 <!-- 当前范围。正在构建的方向。 -->
 
-- [ ] 消除 Python/Cython 层的 POSIX-only 依赖（`posix.unistd`/`posix.fcntl` cimport、硬编码 `/dev/null`、shell 子进程调用）
-- [ ] Windows 下完整测试套件通过（含移植测试中的 POSIX shell 调用与测试数据生成流程）
 - [ ] CI（GitHub Actions）增加 Windows runner，产出并分发 wheel（先 fork 渠道：GitHub Releases）
 - [ ] MSVC 工具链支持（第二阶段，与 MinGW-w64 并列产出 wheel）
 - [ ] Python 版本覆盖面对齐上游当前支持面
@@ -65,6 +64,9 @@ Windows 用户能够 `pip install` 拿到 wheel 并正常使用 pysam 的全部�
 | 全功能对等 + 完整测试套件作为成功标准 | 避免半移植状态难以界定"可用"；测试套件是客观验证依据 | — Pending |
 | **D-16: getopt 族平台豁免（MinGW 隔离模型）** — libchtslib 不再导出 getopt 族（`--exclude-symbols`），各工具扩展持 mingwex 静态私有副本；BUILD-03 门控仅豁免封闭 7 符号集 {getopt, getopt_long, getopt_long_only, optarg, optind, opterr, optopt}，限 win32 路径 | D-10 前提被首次真实 UCRT64 构建证伪：getopt 族在静态 libmingwex.a 中，PE 数据导入缺口使共享设计必然多重定义；采用与 Windows 独立 samtools.exe/bcftools.exe 等价的隔离模型 | — Accepted（2026-09-18，plan 01-03 Task 1 人类裁决；UAT 2026-09-30 追认） |
 | **D-17: CR-01 implib 发射路径分叉延后** — 非 inplace 构建（`pip install .` / `setup.py build` / `bdist_wheel`）下符号门探测 `build/lib.../pysam/*.dll.a` 而 implib 实际落源码树 → 未捕获 CalledProcessError；修法：发射路径从 `os.path.dirname(get_ext_fullpath(...))` 派生 | Phase 1/2 开发流全为 inplace（D-14），两路径一致不阻塞；Phase 3（BUILD-02 MSVC）为首个 out-of-tree 构建阶段，必须先行修复 | — Deferred（2026-09-30 UAT 裁决，01-REVIEW-DISPOSITION.md） |
+| **D-18: libcport 单点平台映射（实证机制）** — `cdef extern from *` + `#ifdef _WIN32` C 预处理器切换（定长 psam_open2/3、强制 `_O_BINARY`、`psam_off_t` 64 位）；POSIX 分支纯恒等别名 | CONTEXT D2-01 的机制设想（Cython 3.1 plain-if + libc.msvcrt/libc.io）被实测证伪：环境为 Cython 3.3.0 且该 cimport 目标不存在；锁定属性（现在做开关、单点映射层）原样交付 | — Accepted（Phase 2，02-01 environment_contract 记录） |
+| **D-19: conftest 平台分裂** — POSIX 分支逐字保留上游子进程 httpserver，win32 用线程版 | 线程版在 POSIX 下被 `_pysam_dispatch` 持 GIL 的 libcurl 传输饿死（fork CI run 38217865780 ubuntu 失败）；分裂后 CI 19/19 全绿 | — Accepted（Phase 2，d912a1df） |
+| **D-20: Phase 3 输入 — dispatch setjmp 修复的双重缺口（WR-01/WR-05）** | samtools/bcftools.pysam.c 的 `_WIN32 __builtin_setjmp` 崩溃修复未同步进 import/pysam.c 模板（下次 import.py 运行会静默回退），且 GCC builtins 不兼容 MSVC/clang-cl；两项均记 02-REVIEW-DISPOSITION.md open，Phase 3（BUILD-02）必须处置 | — Pending（Phase 3 处置项） |
 
 ## Evolution
 
@@ -84,4 +86,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-01 after Phase 1*
+*Last updated: 2026-10-12 after Phase 2*
