@@ -4,7 +4,7 @@ from libc.stdint cimport uint8_t, uint16_t, uint32_t, uint64_t
 from libc.stdio  cimport FILE
 from libc.stdlib cimport malloc, calloc, realloc, free
 from libc.string cimport memcpy, memcmp, strncpy, strlen, strdup
-from posix.types cimport off_t
+from pysam.libcport cimport psam_off_t as off_t
 
 
 # cython does not wrap stdarg

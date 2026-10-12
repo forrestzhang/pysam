@@ -59,8 +59,11 @@ import sys
 from libc.stdio cimport printf, fprintf, stderr
 from libc.string cimport strerror
 from libc.errno cimport errno
-from posix.fcntl cimport open as c_open, O_RDONLY
-from posix.unistd cimport close, dup, read
+# centralized fd-I/O platform mapping (D2-01/D2-04): the copy loop below
+# reads raw fds - on Windows psam_open2 forces _O_BINARY inside the mapping;
+# POSIX names are identity aliases.
+from pysam.libcport cimport psam_open2 as c_open, PSAM_O_RDONLY as O_RDONLY
+from pysam.libcport cimport psam_close as close, psam_dup as dup, psam_read as read
 
 from cpython.object cimport PyObject_AsFileDescriptor
 

@@ -69,11 +69,11 @@ cdef extern from *:
     #endif
     """
 
-    int psam_dup(int fd)
-    int psam_open2(const char *path, int flags)
-    int psam_open3(const char *path, int flags, int mode)
-    Py_ssize_t psam_read(int fd, void *buf, size_t count)
-    int psam_close(int fd)
+    int psam_dup(int fd) nogil
+    int psam_open2(const char *path, int flags) nogil
+    int psam_open3(const char *path, int flags, int mode) nogil
+    Py_ssize_t psam_read(int fd, void *buf, size_t count) nogil
+    int psam_close(int fd) nogil
 
     int PSAM_O_RDONLY
     int PSAM_O_WRONLY

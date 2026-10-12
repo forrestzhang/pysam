@@ -7,7 +7,7 @@
 ## Cython cimports
 ########################################################################
 
-from posix.unistd cimport dup
+from pysam.libcport cimport psam_dup as dup
 from libc.errno  cimport errno
 from libc.stdint cimport INT32_MAX
 from cpython.bytes cimport PyBytes_FromStringAndSize
