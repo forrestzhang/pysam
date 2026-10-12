@@ -60,7 +60,24 @@ Plans:
   4. `compile_test.py` 结构体大小断言按 LLP64 更新并通过（`long` 截断审计关闭）
   5. CJK 非 ASCII 文件名金丝雀测试通过
 
-**Plans**: TBD
+**Plans:** 4 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 02-01-PLAN.md — libcport 集中平台映射层：四处 posix cimport 收敛 + 两处 raw fd O_BINARY 修复 + D2-03 清单（PORT-01, PORT-02）
+
+**Wave 2** *(blocked on Wave 1 completion — 共享构建目录的 rebuild 互斥)*
+
+- [ ] 02-02-PLAN.md — 审计三闭环：CJK 宽字符 shim（PORT-04）+ 字节级回归测试与 call-site 清单（PORT-02）+ LLP64 断言与 static asserts（PORT-03）
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 02-03-PLAN.md — 测试基础设施：三个 Python 数据生成器 + conftest spawn 安全 + 收集期内 in-process 比较改写（TEST-01 阻塞项清除）
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 02-04-PLAN.md — 全量套件绿 + D2-07 四项已知失败 fix-first 处置 + TEST-02 对账与零回归收口（TEST-01, TEST-02）
 
 ### Phase 3: MSVC 构建系统
 
