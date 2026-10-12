@@ -457,23 +457,29 @@ def check():
 | A7 | PORT-04 fix shape = UTF-8→UTF-16 conversion at `hopen_fd` (MultiByteToWideChar + `_wopen`) in htslib hfile.c | PORT-04 | Alternative shapes (e.g. `SetConsoleOutputCP`-style ACP override, app manifest UTF-8) exist but are process-global and worse; validate the patch compiles/passes the canary in-phase |
 | A8 | `#1274`'s environment had external samtools installed for data generation (their Makefile path) — our D2-06 generators make this irrelevant either way | Test porting | None |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All four questions are resolved by the phase plan set (02-01..02-04); per-question resolutions below point at the adopting plan task.
 
 1. **TestLogging ×3 + testReadingFromFileWithoutIndex actual failure modes on OUR build**
    - What we know: test bodies fully read; environment differs from #1274 (Python 3.14.7 vs 3.11, our toolchain, our data generation).
    - What's unclear: whether they even reproduce here.
    - Recommendation: plan an explicit early "reproduce & triage" task for the 4 names before any skip/exempt decisions (D2-07 order).
+   - **Resolution:** adopted — 02-04 Task 1 is the reproduce-first triage task (all four names run with -v before any fix/skip/exempt decision; the recorded baseline decides the disposition).
 
 2. **TEST-02 threshold mechanics** (planner discretion per deferred idea)
    - What we know: Windows collects 1028; expected skip-delta = libcurl-gated tests (5 skipif sites across AlignmentFile/faidx/tabix tests) + any D2-07 exemptions; hard skips (`test_reading_writing_cram`, `test_samtools_processing`, linking env-gate, tty-gated usage tests) exist on BOTH platforms → zero delta.
    - Recommendation: artifact = per-session `{collected, passed, failed, skipped}` + `-rs` reasons table, Windows vs fork-CI-ubuntu on same commit; threshold = "every skip difference individually named with a reason" (stricter and simpler than a numeric budget).
+   - **Resolution:** adopted verbatim — 02-04 Task 3 fixes these mechanics (baseline = fork CI ubuntu job on the phase-final SHA; threshold = zero unexplained skip differences).
 
 3. **Generator byte-fidelity for `ex2_corrupt.bam` / `ex2_truncated.bam`**
    - What we know: POSIX rules use bgzip/dd/printf pipelines; Python equivalents exist but BGZF block boundaries of `pysam.tabix_compress` vs `bgzip` binary may differ (tests consuming these files read them, not byte-compare them — check consumers during implementation).
+   - **Resolution:** carried as a flagged assumption of 02-03 Task 1 — consumers are read-based, so block-boundary drift is acceptable; consumers are verified in-phase and the result recorded in the SUMMARY.
 
 4. **Whether `libchtslib.pxd`'s `off_t`→`psam_off_t` rename ripples into other pxd consumers**
    - What we know: `grep off_t` in `.pxd` shows signatures only in `libchtslib.pxd`; `.pyx` files don't cimport off_t directly.
    - Recommendation: keep `libcport` exporting the name `off_t` (aliased) so consumer diffs stay one-line.
+   - **Resolution:** adopted — 02-01 Task 2 rewires via `cimport psam_off_t as off_t` (the alias keeps the consumer diff one-line; the grep evidence shows no other pxd consumer to ripple into).
 
 ## Environment Availability
 
