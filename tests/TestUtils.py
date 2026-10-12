@@ -1,6 +1,8 @@
+import importlib.util
 import os
 import gzip
 import subprocess
+import sys
 import time
 from itertools import zip_longest
 
@@ -178,7 +180,24 @@ def make_data_files(directory):
         raise RuntimeError(f'Directory {directory!r} already locked: try `{make} clean` there')
 
     try:
-        subprocess.check_output([make, '-C', directory], stderr=subprocess.STDOUT, encoding='ascii')
+        # D2-06 (Phase 2): Windows generates the test data in Python through
+        # per-directory make_data.py generators that call pysam's own dispatch
+        # APIs — there is no make binary and no external samtools/bcftools/
+        # bgzip/tabix on the Windows path (D2-05).  This branch must come
+        # before any make invocation: a missing make binary raises
+        # FileNotFoundError on Windows, which the CalledProcessError handler
+        # below does not catch.  The generator module is loaded by file
+        # location so no global sys.path mutation leaks across calls.
+        if sys.platform == 'win32':
+            module_name = 'make_data_{}'.format(os.path.basename(directory))
+            spec = importlib.util.spec_from_file_location(
+                module_name, os.path.join(directory, 'make_data.py'))
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            module.generate(directory)
+        else:
+            subprocess.check_output([make, '-C', directory], stderr=subprocess.STDOUT, encoding='ascii')
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f'Making test data in {directory!r} failed:\n{e.output}') from None
     finally:
