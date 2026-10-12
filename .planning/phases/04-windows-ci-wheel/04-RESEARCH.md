@@ -409,7 +409,7 @@ pysam from: C:\Users\forre\AppData\Local\Temp\gsd-cleanroom\Lib\site-packages\py
 | A5 | conda 版 CPython 亦自带 VCRUNTIME140.dll（清洁门按 python.org CPython 设计，conda 非门内承诺） | 自包含性结论 | 极低——wheel 的消费者基线是 python.org CPython；conda 用户若遇缺 DLL 属上游生态问题 |
 | A6 | cp310–cp314 各版本将复现 cp313 探针结果（仅 cp313 实建） | CI-02 | 低——cpython 版本间构建差异极小（同一 setup.py 臂）；CI 矩阵本身就是验证 |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **cibuildwheel 内建测试的强度（smoke vs 全量 pytest）**
    - What we know: 全量套件 Windows ~快（Phase 2/3 本地常态跑）；smoke 已实证 wheel 语境可用；`pytest {project}/tests` 在 {project} cwd 有源码树遮蔽疑虑（本地 repo 内有 inplace .pyd；runner 的 checkout 无 .pyd——inplace 产物不进 git——所以 runner 上 pytest 实际测的是 wheel，疑虑仅存在于本地复现场景）。
