@@ -20,6 +20,19 @@
 ; also defined static-inline inside htslib/sam.c (file-local there);
 ; htslib_util.c's non-static definition is the exportable one.
 ; pysam_seq_comp_table is a data symbol (DATA keyword).
+;
+; 03-04 additions (consumer links, LNK2001-driven): on the MinGW arm
+; GNU ld's --export-all-symbols exports every global symbol of
+; libchtslib, so the tool extensions bind three more families
+; implicitly; link.exe needs them listed explicitly:
+;   - htslib's un-annotated DATA (seq_nt16_str/table/int, hts_verbose)
+;   - the zlib API (compiled into libchtslib; the twins include zlib.h
+;     and call crc32/gzopen/gzread/gzgets/gzdopen/gzclose/compress
+;     directly)
+;   - the musl regex API (hts_expr/sam filters + tool filter code)
+;   - the win32/msvc shim surface (pthread_create/join/attr family,
+;     nanosleep, mkstemp, gettimeofday -- MinGW resolved these through
+;     the system winpthreads/UCRT; MSVC's only copies live here)
 
 EXPORTS
     hts_lib_shutdown
@@ -30,4 +43,27 @@ EXPORTS
     hts_parse_format
     hts_parse_opt_list
     aux_type2size
+    pysam_bam_update
     pysam_seq_comp_table DATA
+    seq_nt16_str DATA
+    seq_nt16_table DATA
+    seq_nt16_int DATA
+    hts_verbose DATA
+    crc32
+    compress
+    gzopen
+    gzdopen
+    gzread
+    gzgets
+    gzclose
+    regcomp
+    regexec
+    regerror
+    regfree
+    pthread_create
+    pthread_join
+    pthread_attr_init
+    pthread_attr_setdetachstate
+    nanosleep
+    mkstemp
+    gettimeofday

@@ -46,7 +46,16 @@ unsigned char pysam_translate_sequence(const unsigned char s);
 int aux_type2size(uint8_t type);
 
 // ASCII table of base complement characters
+// BUILD-02 (03-04): consumed across module boundaries by
+// libcalignedsegment; under MSVC the consumer arm needs dllimport
+// (no linker auto-import for data). libchtslib TUs compile with
+// HTS_BUILDING_LIBRARY and keep the plain declaration. MinGW/POSIX
+// see the plain declaration verbatim.
+#if defined(_MSC_VER) && !defined(HTS_BUILDING_LIBRARY)
+extern __declspec(dllimport) const char pysam_seq_comp_table[256];
+#else
 extern const char pysam_seq_comp_table[256];
+#endif
 
 //-------------------------------------------------------
 // Wrapping accessor macros in sam.h

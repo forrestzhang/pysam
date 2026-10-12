@@ -127,6 +127,15 @@ DEALINGS IN THE SOFTWARE.  */
 #if defined(_WIN32) || defined(__CYGWIN__)
 #if defined(HTS_BUILDING_LIBRARY)
 #define HTSLIB_EXPORT __declspec(dllexport)
+#elif defined(_MSC_VER)
+// BUILD-02 (03-04): consumer arm of the annotated surface. Under MSVC
+// the extensions import these symbols from the libchtslib DLL, and
+// data symbols in particular require __declspec(dllimport) at the
+// declaration site (link.exe has no auto-import; GNU ld rewrites
+// direct data references through __imp_ which is how the MinGW arm
+// binds with the empty definition below). MinGW keeps the empty arm
+// -- its builds are byte-identical.
+#define HTSLIB_EXPORT __declspec(dllimport)
 #else
 #define HTSLIB_EXPORT
 #endif

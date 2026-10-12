@@ -1103,16 +1103,37 @@ if IS_MSVC_PYTHON:
 
 suffix = sysconfig.get_config_var('EXT_SUFFIX')
 
-internal_htslib_libraries = [
-    os.path.splitext(f"chtslib{suffix}")[0],
+# BUILD-02 (03-04): under MSVC the internal library names carry the
+# modules' own "lib" prefix verbatim. link.exe opens a .lib argument
+# literally -- GNU ld's -l searches both NAME and libNAME, which is how
+# the mingw32 arm resolves "chtslib<suffix>" against the emitted
+# libchtslib<suffix>.dll.a, but chtslib<suffix>.lib does not exist for
+# link.exe (LNK1181 at the first consumer link, 03-04). The emitted
+# /IMPLIB: stems and the symbol gate's probe paths both already use
+# libchtslib/libcsamtools/... module names, so the exact spellings
+# match end to end.
+if IS_MSVC_PYTHON:
+    internal_htslib_libraries = [
+        os.path.splitext(f"libchtslib{suffix}")[0],
     ]
-internal_samtools_libraries = [
-    os.path.splitext(f"csamtools{suffix}")[0],
-    os.path.splitext(f"cbcftools{suffix}")[0],
+    internal_samtools_libraries = [
+        os.path.splitext(f"libcsamtools{suffix}")[0],
+        os.path.splitext(f"libcbcftools{suffix}")[0],
     ]
-internal_pysamutil_libraries = [
-    os.path.splitext(f"cutils{suffix}")[0],
+    internal_pysamutil_libraries = [
+        os.path.splitext(f"libcutils{suffix}")[0],
     ]
+else:
+    internal_htslib_libraries = [
+        os.path.splitext(f"chtslib{suffix}")[0],
+        ]
+    internal_samtools_libraries = [
+        os.path.splitext(f"csamtools{suffix}")[0],
+        os.path.splitext(f"cbcftools{suffix}")[0],
+        ]
+    internal_pysamutil_libraries = [
+        os.path.splitext(f"cutils{suffix}")[0],
+        ]
 
 libraries_for_pysam_module = external_htslib_libraries + internal_htslib_libraries + internal_pysamutil_libraries
 
