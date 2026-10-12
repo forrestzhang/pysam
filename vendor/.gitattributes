@@ -1,0 +1,4 @@
+# Vendored third-party sources (03-02): keep upstream LF bytes on every
+# platform and exclude from GitHub language stats (same pattern as the
+# bundled htslib/samtools/bcftools rules in the root .gitattributes).
+*	text=auto eol=lf linguist-vendored

@@ -1,0 +1,16 @@
+# SHA-256 manifest for vendored third-party sources (plan 03-02).
+#
+# One line per source tarball: sha256, tarball filename, version.
+# Origin URLs and cross-check status for every entry live in vendor/README.md.
+# Cross-check policy (03-02 threat model T-03-03/T-03-04): every hash below was
+# compared against a value published by the upstream publisher at download
+# time; entries that could NOT be cross-checked are explicitly flagged in
+# vendor/README.md and never silently trusted.
+#
+# Re-verify offline against a re-downloaded tarball:
+#   curl -O <origin URL from vendor/README.md>
+#   sha256sum <tarball>   # must equal the hash recorded here
+
+sha256: bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16  zlib-1.3.2.tar.gz    # zlib 1.3.2
+sha256: ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269  bzip2-1.0.8.tar.gz   # bzip2 1.0.8
+sha256: 0014c7886930454fe8bd4228665b51af55eeae560ea135c9c4cd33f55b2591d9  xz-5.8.4.tar.gz      # xz (liblzma) 5.8.4
