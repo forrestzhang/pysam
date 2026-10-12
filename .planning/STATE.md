@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 02
 current_phase_name: 可移植性加固与测试全绿
 status: executing
-stopped_at: Phase 2 context gathered
-last_updated: "2026-10-12T04:28:31.938Z"
-last_activity: 2026-10-01
-last_activity_desc: Phase 01 complete, transitioned to Phase 2
-state_head: 78769c0419bcda14e43e9ad353b2065f3a4b16db
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-10-12T05:02:44.724Z"
+last_activity: 2026-10-12
+last_activity_desc: Phase 02 execution started
+state_head: 7352f447eb9d62e3ab12a5fb316a5d38b056b72e
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 7
-  completed_plans: 3
+  completed_plans: 4
   percent: 25
 ---
 
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-01)
 
 **Core value:** Windows 用户能够 `pip install` 拿到 wheel 并正常使用 pysam 的全部功能（htslib API 绑定 + samtools/bcftools 命令封装），完整测试套件在 Windows 上通过。
-**Current focus:** Phase 2 — 可移植性加固与测试全绿
+**Current focus:** Phase 02 — 可移植性加固与测试全绿
 
 ## Current Position
 
-Phase: 02 (可移植性加固与测试全绿) — READY TO EXECUTE
-Plan: Not started
+Phase: 02 (可移植性加固与测试全绿) — EXECUTING
+Plan: 2 of 4
 Status: Ready to execute
-Last activity: 2026-10-01 — Phase 01 complete, transitioned to Phase 2
+Last activity: 2026-10-12 — Phase 02 execution started
 
 Progress: [███░░░░░░░] 25%
 
@@ -61,6 +61,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 01 P01 | 18 min | 3 tasks | 4 files |
 | Phase 01 P02 | 24 min | 3 tasks | 4 files |
 | Phase 01 P03 | 11d 18h (11.5d paused at gh-auth gate; ~6h active) | 3 tasks | 8 files |
+| Phase 02 P01 | 27 min | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -74,6 +75,10 @@ Recent decisions affecting current work:
 - [Phase 01]: D-16 (user-adjudicated option-1, plan 01-03): getopt family excluded from libchtslib export surface via --exclude-symbols; private mingwex static copies per tool module; BUILD-03 win32 exemption CLOSED at 7 symbols {getopt, getopt_long, getopt_long_only, optarg, optind, opterr, optopt} — D-10 shared-copy premise falsified by the first real UCRT64 build
 - [Phase 01]: Win32 symbol-gate evidence channel = .dll.a import libraries: distutils links with -s (strip) so .pyd has no readable symbol table; llvm-nm parses the PE archives (A2 verified); removing -s not authorized
 - [Phase 01]: Plan 01-03 CI evidence via unauthenticated public REST API (same endpoint gh run view reads) when gh CLI is unauthenticated — standing substitute authorized by orchestrator (2026-09-30); ubuntu/macos blocking, BSD advisory (D-12)
+- [Phase 02]: Plan 02-01: libcport uses cdef extern from * + #ifdef C-preprocessor switch (Cython 3.3.0 has no usable compile-time conditional; fixed-arity macros only; POSIX branch pure identity aliases).
+- [Phase 02]: Plan 02-01: save_stdout byte proof runs on flagstat, not view - samtools view writes via htslib '-' to fd 1 on every platform so its save_stdout file is always empty; flagstat is the command that flows through the dispatch redirect fd.
+- [Phase 02]: Plan 02-01: write-side CRLF corruption at libcutils save_stdout was masked in-process by CPython startup _fmode=_O_BINARY (fdopen FILE* layer); psam_open3's _O_BINARY makes the fd binary-by-flag (standalone-C probe proved CRT default corrupts). Read side (tabix_compress) was live-corrupt: 203->153 bytes, fixed.
+- [Phase 02]: Plan 02-01: canonical UCRT64 rebuild requires both HTSLIB_CONFIGURE_OPTIONS=--disable-libcurl and MAKE=mingw32-make (devtools/msys2-bootstrap.sh contract).
 
 ### Pending Todos
 
@@ -95,6 +100,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T03:06:55.734Z
-Stopped at: Phase 2 context gathered
-Resume file: .planning/phases/02-portability-tests/02-CONTEXT.md
+Last session: 2026-10-12T05:02:44.692Z
+Stopped at: Completed 02-01-PLAN.md
+Resume file: None

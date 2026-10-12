@@ -117,7 +117,7 @@ Based on research, suggested phase structure (aligned with ARCHITECTURE.md's sev
 ### Research Flags
 
 Needs research during planning:
-- **Phase 1:** custom `build_ext` to wire ucrt64 gcc against python.org CPython headers (least-documented glue; STACK MEDIUM confidence).
+- **Phase 1:** custom `build_ext` to wire ucrt64 gcc against python.org CPython headers (least-documented glue; STACK MEDIUM confidence). **Partially answered 2026-10-09:** upstream PR #1400 demonstrates a working recipe (setup-python + `cygpath` + `msys2 {0}` shell) — see [UPSTREAM-PRS.md](UPSTREAM-PRS.md); validate it against our `build_ext` design rather than researching from scratch.
 - **Phase 2:** Cython 3.1 compile-time platform-switch idiom + exact `libc.msvcrt`/`libc.io` mappings.
 - **Phase 4:** clang-cl as MSVC-phase fallback; MSVC C99 shim scope (VLA inventory in bundled sources).
 - **Phase 5:** Windows dynamic loader design for libcurl.
@@ -157,6 +157,7 @@ Standard patterns (skip research-phase):
 - [cppreference: C compiler support](https://cppreference.net/c/99.html) — MSVC C99/C11 feature matrix
 - [Bioconda FAQ](https://bioconda.github.io/faqs.html) — "Windows is not supported"
 - [pysam issues #575, #969, #1132, #1137](https://github.com/pysam-developers/pysam/issues/575) — Windows install demand
+- [pysam PR #1274](https://github.com/pysam-developers/pysam/pull/1274) / [PR #1400](https://github.com/pysam-developers/pysam/pull/1400) — upstream MinGW efforts; maintainer stance (MSYS2-only, delvewheel acceptable); field report in [UPSTREAM-PRS.md](UPSTREAM-PRS.md)
 - Codebase docs: `.planning/codebase/STACK.md`, `ARCHITECTURE.md`, `CONCERNS.md` (W1-W10), `TESTING.md`
 
 ### Secondary (MEDIUM confidence)
