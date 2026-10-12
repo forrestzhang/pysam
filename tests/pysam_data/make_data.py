@@ -214,7 +214,7 @@ def generate(directory):
         shutil.copyfileobj(inf, out)
         out.write(_CORRUPT_RECORD)
     try:
-        pysam.tabix_compress(tmp_raw, p("ex2_corrupt.bam"))
+        pysam.tabix_compress(tmp_raw, p("ex2_corrupt.bam"), force=True)
     finally:
         os.remove(tmp_raw)
 
@@ -222,7 +222,7 @@ def generate(directory):
     _gzip_file(p("faidx_empty_seq.fq"), p("faidx_empty_seq.fq.gz"))
 
     # ex1.fa.gz: bgzip via tabix_compress, then faidx for .fai/.gzi.
-    pysam.tabix_compress(p("ex1.fa"), p("ex1.fa.gz"))
+    pysam.tabix_compress(p("ex1.fa"), p("ex1.fa.gz"), force=True)
     pysam.samtools.faidx(p("ex1.fa.gz"), catch_stdout=False)
 
     # all.stamp (idempotency marker for make_data_files).
