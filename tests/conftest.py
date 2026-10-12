@@ -1,14 +1,14 @@
 import http.server
-import multiprocessing
 import os
 import socketserver
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
 
-def _httpd(wconn, directory):
+def _build_httpd(directory):
     class QuietHTTPServer(http.server.HTTPServer):
         def server_bind(self):  # Work around actions/runner-images#14568
             socketserver.TCPServer.server_bind(self)
@@ -27,22 +27,28 @@ def _httpd(wconn, directory):
         def log_message(self, format, *args):
             pass
 
-    server = QuietHTTPServer(("localhost", 0), QuietRequestHandler)
-    wconn.send((server.server_name, server.server_port))
-    server.serve_forever()
+    return QuietHTTPServer(("localhost", 0), QuietRequestHandler)
 
 
 @pytest.fixture(scope="session")
 def httpserver():
-    rconn, wconn = multiprocessing.Pipe(duplex=False)
-    process = multiprocessing.Process(target=_httpd, args=[wconn, Path(__file__).parent], name="httpd", daemon=True)
-    process.start()
+    # Spawn safety (Phase 2): the default child-process start method on
+    # Windows is spawn, which re-imports this conftest in a child process
+    # under pytest's import machinery — slow and fragile.  A daemon thread
+    # serves the same localhost ephemeral-port fixture with no child
+    # process and no pipe handshake.
+    server = _build_httpd(Path(__file__).parent)
+    thread = threading.Thread(target=server.serve_forever, name="httpd",
+                              daemon=True)
+    thread.start()
 
-    host, port = rconn.recv()
-    yield f"{host}:{port}"
+    yield f"{server.server_name}:{server.server_port}"
 
-    process.terminate()
-    process.join()
+    try:
+        server.shutdown()
+    finally:
+        server.server_close()
+        thread.join(timeout=10)
 
 
 def pytest_report_header(config):
@@ -50,6 +56,10 @@ def pytest_report_header(config):
 
     if "REF_PATH" in os.environ:
         text.append("pysam: overriding REF_PATH to disable external reference lookups")
-    os.environ["REF_PATH"] = ":"
+    # htslib compiles HTS_PATH_SEPARATOR_CHAR to ';' on _WIN32
+    # (htslib/htslib/hts.h:44-51); a literal ':' would be one bogus path
+    # entry on Windows rather than an empty element list.  os.pathsep
+    # carries the matching separator on every platform.
+    os.environ["REF_PATH"] = os.pathsep
 
     return text
