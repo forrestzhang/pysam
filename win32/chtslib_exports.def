@@ -1,0 +1,23 @@
+; win32/chtslib_exports.def -- supplementary libchtslib export list for
+; the MSVC link (BUILD-02, plan 03-03). Linked via /DEF: on libchtslib
+; only; the API surface itself is carried by htslib's HTSLIB_EXPORT
+; annotations (activated by defining HTS_BUILDING_LIBRARY while
+; compiling libchtslib -- hts_defs.h dllexport machinery).
+;
+; This list covers only the seven symbols plan 03-03 enumerated as
+; needing belt-and-braces coverage (all seven are annotated in the
+; current htslib 1.24 tree, so dllexport and this list union-export them
+; idempotently -- no duplicate exports are produced).
+;
+; Drift self-detects: a consumer symbol missing from the union fails
+; loudly as LNK2001 at link time. Do NOT grow this into a
+; hand-maintained full export list (03-RESEARCH Anti-Patterns).
+
+EXPORTS
+    hts_lib_shutdown
+    hts_free
+    hts_opt_add
+    hts_opt_apply
+    hts_opt_free
+    hts_parse_format
+    hts_parse_opt_list
