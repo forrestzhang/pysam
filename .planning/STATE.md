@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 02
 current_phase_name: 可移植性加固与测试全绿
 status: executing
-stopped_at: Completed 02-02-PLAN.md
-last_updated: "2026-10-12T06:00:10.160Z"
+stopped_at: Completed 02-03-PLAN.md
+last_updated: "2026-10-12T07:02:26.581Z"
 last_activity: 2026-10-12
 last_activity_desc: Phase 02 execution started
-state_head: 100389f1bf3bc0c92b53446f8b95a50ad4af9ff7
+state_head: 0aca5732bdbd20072d37c8f5779c4988401e88ba
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 7
-  completed_plans: 5
+  completed_plans: 6
   percent: 25
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-01)
 ## Current Position
 
 Phase: 02 (可移植性加固与测试全绿) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-10-12 — Phase 02 execution started
 
@@ -63,6 +63,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 01 P03 | 11d 18h (11.5d paused at gh-auth gate; ~6h active) | 3 tasks | 8 files |
 | Phase 02 P01 | 27 min | 3 tasks | 6 files |
 | Phase 02 P02 | 49 min | 3 tasks | 8 files |
+| Phase 02 P03 | 54 min | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -83,6 +84,10 @@ Recent decisions affecting current work:
 - [Phase 02]: Plan 02-02: PORT-04 needed wide-open shims at THREE layers, not one - hopen_fd (htslib), psam_wopen (libcport, covers tabix_compress/save_stdout), idx_stat_exists (hts.c index auto-discovery). Canary-first design found each; all use two-call MultiByteToWideChar, no MAX_PATH.
 - [Phase 02]: Plan 02-02: htslib C-source edits require 'setup.py build_ext --inplace --force' - pip install -e . skips libhts.a rebuild when it exists and extensions do not relink on extra_object changes.
 - [Phase 02]: Plan 02-02: pyximport on this env needs repo root appended to sys.path (PEP 660 editable hides pysam/*.pxd from Cython) and an absolute build_dir (relative .pyd paths fail the Windows loader).
+- [Phase 02]: D2-06 Windows data generation: per-directory make_data.py generators behind make_data_files sys.platform dispatch (importlib file-location load, unique module name per directory); Makefiles stay the POSIX authority and the make line is byte-identical. Generator stdout must be taken from the dispatch RETURN value - raw=True only bypasses parsers; the collector returns str for text output and bytes only when the text-mode read raises UnicodeDecodeError (02-03).
+- [Phase 02]: htslib fd_write Windows raise(SIGTERM)-on-broken-pipe kills the CPython host process (CPython sets SIGPIPE to SIG_IGN on POSIX so Linux never dies); pysam Windows port reports errno=EPIPE with an error return instead - identical error flow on every platform, POSIX block untouched (02-03).
+- [Phase 02]: Dispatch exit interception (samtools_exit/bcftools_exit) crashes with STATUS_BAD_STACK (0xC0000028) under UCRT longjmp's RtlUnwindEx despite full .pdata coverage; _WIN32 builds use GCC __builtin_setjmp/__builtin_longjmp (direct register restore, no SEH unwind, setjmp and longjmp live in one TU); POSIX keeps standard setjmp/longjmp verbatim (02-03).
+- [Phase 02]: samtools_test win32 oracle: redirect statements capture dispatch output to the target file; -o statements run with catch_stdout=False letting samtools' own output handling write the files; three-tier comparison ladder unchanged; POSIX keeps the external run_command oracle and fork CI ubuntu remains the external-binary coverage (D2-05 acknowledged weakening) (02-03).
 
 ### Pending Todos
 
@@ -104,6 +109,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T05:59:56.559Z
-Stopped at: Completed 02-02-PLAN.md
+Last session: 2026-10-12T07:02:26.545Z
+Stopped at: Completed 02-03-PLAN.md
 Resume file: None
