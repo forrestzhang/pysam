@@ -15,10 +15,19 @@ from pysam.libcport cimport psam_off_t
 cdef extern from *:
     """
     #include "htslib/hts.h"
-    _Static_assert(sizeof(hts_pos_t) == 8, "hts_pos_t must be 64-bit");
-    _Static_assert(sizeof(long long) >= 8, "64-bit scalar expected on LLP64");
-    _Static_assert(sizeof(psam_off_t) == 8,
-                   "psam_off_t must match htslib's 64-bit LFS off_t");
+    /* Negative-array-size typedefs, the pre-C11 portable static assert:
+       _Static_assert is a C11 keyword that MSVC only accepts under an
+       explicit /std switch (setup.py passes /std:c11; pyximport builds
+       with stock distutils flags), so the keyword form would fail the
+       pyximport compile on MSVC for a purely syntactic reason.  The
+       typedef form asserts the identical invariant on every toolchain
+       and puts the reason in the failing symbol name. */
+    typedef char psam_static_assert_hts_pos_t_must_be_64_bit[
+        (sizeof(hts_pos_t) == 8) ? 1 : -1];
+    typedef char psam_static_assert_64_bit_scalar_expected_on_LLP64[
+        (sizeof(long long) >= 8) ? 1 : -1];
+    typedef char psam_static_assert_psam_off_t_must_match_64_bit_LFS[
+        (sizeof(psam_off_t) == 8) ? 1 : -1];
     """
 
 
