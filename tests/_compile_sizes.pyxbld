@@ -1,0 +1,20 @@
+"""pyximport build hook for _compile_sizes.pyx (D2-09).
+
+Adds exactly one include dir -- the repo's htslib -- computed from this
+file's own location so the "htslib/hts.h" include in _compile_sizes.pyx
+resolves on any checkout. No libraries or extra args: the module is
+compile-time asserts only and links no htslib symbols.
+"""
+
+import os
+
+from setuptools import Extension
+
+
+def make_ext(modname, pyxfilename):
+    here = os.path.dirname(os.path.abspath(__file__))
+    return Extension(
+        modname,
+        sources=[pyxfilename],
+        include_dirs=[os.path.join(here, "..", "htslib")],
+    )
