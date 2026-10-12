@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: MinGW-w64 构建系统** - MSYS2 UCRT64 下从源码完整构建 pysam（开发验证产物） (completed 2026-10-01)
 - [x] **Phase 2: 可移植性加固与测试全绿** - POSIX 依赖清除 + 完整测试套件在 Windows 通过（对等证据） (completed 2026-10-12)
-- [ ] **Phase 3: MSVC 构建系统** - 预烘焙 config.h.msvc + 显式源码清单的官方级工具链
+- [x] **Phase 3: MSVC 构建系统** - 预烘焙 config.h.msvc + 显式源码清单的官方级工具链 (completed 2026-10-13)
 - [ ] **Phase 4: Windows CI 与 wheel 分发** - CI 持续产出并分发自包含 win_amd64 wheel（fork 渠道）
 
 ## Phase Details
@@ -90,7 +90,7 @@ Plans:
   2. MSVC 构建产物上 `import pysam` 成功，且完整测试套件全绿
   3. 单一集中 MSVC shim 头文件覆盖 C99/VLA 缺口（无逐文件打地鼠）；按研究标志完成 clang-cl 回退路径评估
 
-**Plans:** 5/5 plans executed
+**Plans:** 5/5 plans complete
 
 Plans:
 **Wave 1** *(parallel — no file overlap)*
@@ -140,7 +140,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 |-------|----------------|--------|-----------|
 | 1. MinGW-w64 构建系统 | 3/3 | Complete    | 2026-10-01 |
 | 2. 可移植性加固与测试全绿 | 4/4 | Complete    | 2026-10-12 |
-| 3. MSVC 构建系统 | 5/5 | In Progress | - |
+| 3. MSVC 构建系统 | 5/5 | Complete    | 2026-10-13 |
 | 4. Windows CI 与 wheel 分发 | 0/TBD | Not started | - |
 
 ---
