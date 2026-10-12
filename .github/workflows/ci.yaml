@@ -216,3 +216,46 @@ jobs:
 
       - name: Run tests
         run:  pytest
+
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash  # runner default is pwsh; the build/test lines are bash syntax
+    strategy:
+      matrix:
+        python-version: ['3.13']
+
+    steps:
+      - name: Checkout pysam
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Provision llvm-nm for the BUILD-03 symbol gate
+        uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: UCRT64
+          release: false  # reuse the MSYS2 bundled with the runner image
+          update: false
+          install: mingw-w64-ucrt-x86_64-llvm-tools
+
+      - name: Put llvm-nm on PATH
+        run:  echo "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin" >> "$GITHUB_PATH"
+
+      - name: Install prerequisite Python libraries
+        run:  pip install Cython mypy pytest setuptools
+
+      - name: Build (directly from checkout)
+        run:  python setup.py build
+
+      - name: Run tests
+        run: |
+          PYTHONPATH=$(echo $GITHUB_WORKSPACE/build/lib.*) pytest
