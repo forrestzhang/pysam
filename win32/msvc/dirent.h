@@ -15,7 +15,7 @@
 #ifndef PYSAM_WIN32_MSVC_DIRENT_H
 #define PYSAM_WIN32_MSVC_DIRENT_H
 
-#if defined(__GNUC__)
+#if defined(__GNUC__) && !defined(_MSC_VER)
 #include_next <dirent.h>
 #else
 

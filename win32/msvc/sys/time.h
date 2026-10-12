@@ -14,7 +14,7 @@
 #ifndef PYSAM_WIN32_MSVC_SYS_TIME_H
 #define PYSAM_WIN32_MSVC_SYS_TIME_H
 
-#if defined(__GNUC__)
+#if defined(__GNUC__) && !defined(_MSC_VER)
 #include_next <sys/time.h>
 #else
 #include <time.h>

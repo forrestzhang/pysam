@@ -12,7 +12,7 @@
 #ifndef PYSAM_WIN32_MSVC_STRINGS_H
 #define PYSAM_WIN32_MSVC_STRINGS_H
 
-#if defined(__GNUC__)
+#if defined(__GNUC__) && !defined(_MSC_VER)
 #include_next <strings.h>
 #else
 /* mappings live in msvc_compat.h; nothing to define here */

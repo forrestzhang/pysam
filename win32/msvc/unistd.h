@@ -8,6 +8,13 @@
    redefining anything. The forwarder arm is proven by compiling
    win32/msvc/shim_selftest.c with 'gcc -fsyntax-only -I win32/msvc'.
 
+   The !defined(_MSC_VER) half of the gate (same discipline as
+   msvc_compat.h's #ifdef _MSC_VER) keeps clang-cl on the MSVC arm:
+   clang-cl defines BOTH __GNUC__ and _MSC_VER, and #include_next would
+   reach pthread/unistd-style headers that do not exist in an MSVC
+   environment. Plain gcc defines no _MSC_VER, so the UCRT64 forwarder
+   is unchanged.
+
    The MSVC arm maps the raw fd trio with fixed-arity macros -- the
    libcport.pxd precedent (D-18): fixed arity keeps the mapping
    compatible with MSVC's conforming preprocessor and cannot capture
@@ -17,7 +24,7 @@
 #ifndef PYSAM_WIN32_MSVC_UNISTD_H
 #define PYSAM_WIN32_MSVC_UNISTD_H
 
-#if defined(__GNUC__)
+#if defined(__GNUC__) && !defined(_MSC_VER)
 #include_next <unistd.h>
 #else
 #include <io.h>
