@@ -53,7 +53,7 @@
  *              If the buffer size is not sufficient, then the return value is the number of characters required for
  *              buffer string, including the terminating null byte.
  */
-static inline size_t hex_uint64_t(uint64_t n, char str[static 17])
+static inline size_t hex_uint64_t(uint64_t n, char str[])
 {
     return snprintf(str, 17, "%016" PRIx64, n);
 }

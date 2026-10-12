@@ -91,7 +91,7 @@ const char *hts_bcf_wmode2(int file_type, const char *fname)
     return hts_bcf_wmode(file_type);
 }
 
-void set_wmode(char dst[static 8], int file_type, const char *fname, int clevel)
+void set_wmode(char dst[], int file_type, const char *fname, int clevel)
 {
     const char *ret = NULL;
     const char *end = fname ? strstr(fname, HTS_IDX_DELIM) : NULL;

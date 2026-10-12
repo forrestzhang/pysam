@@ -71,7 +71,15 @@ struct _abuf_t
     rbuf_t rbuf;
 
     kstring_t tmps;
+#if defined(_MSC_VER)
+    /* BUILD-02 (03-04): MSVC rejects void* pointer arithmetic (GNU
+       extension); the tmp/tmp2 buffers are only ever byte-addressed
+       (memcpy/memcmp + num_size offsets), so uint8_t* is
+       behavior-identical on every platform. */
+    uint8_t *tmp, *tmp2;
+#else
     void *tmp, *tmp2;
+#endif
     int32_t *gt, *tmpi;
     int ngt, mgt, ntmpi, mtmpi, mtmp, mtmp2;
     int star_allele;
@@ -611,8 +619,13 @@ static void _split_table_set_format(abuf_t *buf, bcf_fmt_t *fmt, merge_rule_t mo
             assert( iori<nval );
             for (i=0; i<nsmpl; i++)
             {
+#if defined(_MSC_VER)
+                uint8_t *src = buf->tmp  + nval1*num_size*i;
+                uint8_t *dst = buf->tmp2 + num_size*i*(star_allele+1);;
+#else
                 void *src = buf->tmp  + nval1*num_size*i;
                 void *dst = buf->tmp2 + num_size*i*(star_allele+1);
+#endif
                 if ( !memcmp(vector_end_ptr,src+iori*num_size,num_size) )
                     memcpy(dst,missing_ptr,num_size);
                 else
@@ -652,8 +665,13 @@ static void _split_table_set_format(abuf_t *buf, bcf_fmt_t *fmt, merge_rule_t mo
             assert( iori<=nval );
             for (i=0; i<nsmpl; i++)
             {
+#if defined(_MSC_VER)
+                uint8_t *src = buf->tmp  + nval1*num_size*i;
+                uint8_t *dst = buf->tmp2 + num_size*i*(star_allele+2);;
+#else
                 void *src = buf->tmp  + nval1*num_size*i;
                 void *dst = buf->tmp2 + num_size*i*(star_allele+2);
+#endif
                 memcpy(dst,src,num_size);
                 memcpy(dst+num_size,src+iori*num_size,num_size);
                 if ( type==BCF_HT_INT && mode==M_SUM )
