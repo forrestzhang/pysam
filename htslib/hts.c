@@ -4755,6 +4755,40 @@ static int idx_test_and_fetch(const char *fn, const char **local_fn, int *local_
  * @param fnidx - pointer to the index file name placeholder
  * @return        1 for success, 0 for failure
  */
+#if defined(_WIN32)
+/* For MultiByteToWideChar, used by idx_stat_exists below. */
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
+
+// Narrow stat() interprets filenames in the ANSI code page on Windows, so
+// probing for UTF-8 encoded index file names (e.g. non-ASCII paths handed
+// over by pysam) can never succeed. Probe via the UTF-16 conversion with
+// _wstat instead, using the same two-call MultiByteToWideChar pattern as
+// the hopen_fd shim in hfile.c (dynamically sized buffer, so long paths
+// are never truncated); POSIX keeps plain stat() unchanged.
+static int idx_stat_exists(const char *fn)
+{
+#if defined(_WIN32)
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, fn, -1, NULL, 0);
+    int exists = 0;
+    wchar_t *wfn = wlen > 0
+        ? (wchar_t *) malloc(wlen * sizeof (wchar_t)) : NULL;
+    struct _stat wbuf;
+
+    if (wfn != NULL) {
+        exists = MultiByteToWideChar(CP_UTF8, 0, fn, -1, wfn, wlen) > 0
+            && _wstat(wfn, &wbuf) == 0;
+        free(wfn);
+    }
+    return exists;
+#else
+    struct stat sbuf;
+    return stat(fn, &sbuf) == 0;
+#endif
+}
+
 int hts_idx_check_local(const char *fn, int fmt, char **fnidx) {
     int i, l_fn, l_ext;
     const char *fn_tmp = NULL;
@@ -4793,18 +4827,16 @@ int hts_idx_check_local(const char *fn, int fmt, char **fnidx) {
     fnidx_tmp = (char*)calloc(l_fn + l_ext + 1, 1);
     if (!fnidx_tmp) return 0;
 
-    struct stat sbuf;
-
     // Try alignment.bam.csi first
     strcpy(fnidx_tmp, fn_tmp); strcpy(fnidx_tmp + l_fn, csi_ext);
-    if(stat(fnidx_tmp, &sbuf) == 0) {
+    if(idx_stat_exists(fnidx_tmp)) {
         *fnidx = fnidx_tmp;
         return 1;
     } else { // Then try alignment.csi
         for (i = l_fn - 1; i > 0; --i)
             if (fnidx_tmp[i] == '.') {
                 strcpy(fnidx_tmp + i, csi_ext);
-                if(stat(fnidx_tmp, &sbuf) == 0) {
+                if(idx_stat_exists(fnidx_tmp)) {
                     *fnidx = fnidx_tmp;
                     return 1;
                 }
@@ -4814,14 +4846,14 @@ int hts_idx_check_local(const char *fn, int fmt, char **fnidx) {
     if (fmt == HTS_FMT_BAI) {
         // Next, try alignment.bam.bai
         strcpy(fnidx_tmp, fn_tmp); strcpy(fnidx_tmp + l_fn, bai_ext);
-        if(stat(fnidx_tmp, &sbuf) == 0) {
+        if(idx_stat_exists(fnidx_tmp)) {
             *fnidx = fnidx_tmp;
             return 1;
         } else { // And finally, try alignment.bai
             for (i = l_fn - 1; i > 0; --i)
                 if (fnidx_tmp[i] == '.') {
                     strcpy(fnidx_tmp + i, bai_ext);
-                    if(stat(fnidx_tmp, &sbuf) == 0) {
+                    if(idx_stat_exists(fnidx_tmp)) {
                         *fnidx = fnidx_tmp;
                         return 1;
                     }
@@ -4830,14 +4862,14 @@ int hts_idx_check_local(const char *fn, int fmt, char **fnidx) {
         }
     } else if (fmt == HTS_FMT_TBI) { // Or .tbi
         strcpy(fnidx_tmp, fn_tmp); strcpy(fnidx_tmp + l_fn, tbi_ext);
-        if(stat(fnidx_tmp, &sbuf) == 0) {
+        if(idx_stat_exists(fnidx_tmp)) {
             *fnidx = fnidx_tmp;
             return 1;
         } else {
             for (i = l_fn - 1; i > 0; --i)
                 if (fnidx_tmp[i] == '.') {
                     strcpy(fnidx_tmp + i, tbi_ext);
-                    if(stat(fnidx_tmp, &sbuf) == 0) {
+                    if(idx_stat_exists(fnidx_tmp)) {
                         *fnidx = fnidx_tmp;
                         return 1;
                     }
@@ -4846,14 +4878,14 @@ int hts_idx_check_local(const char *fn, int fmt, char **fnidx) {
         }
     } else if (fmt == HTS_FMT_CRAI) { // Or .crai
         strcpy(fnidx_tmp, fn_tmp); strcpy(fnidx_tmp + l_fn, crai_ext);
-        if(stat(fnidx_tmp, &sbuf) == 0) {
+        if(idx_stat_exists(fnidx_tmp)) {
             *fnidx = fnidx_tmp;
             return 1;
         } else {
             for (i = l_fn - 1; i > 0; --i)
                 if (fnidx_tmp[i] == '.') {
                     strcpy(fnidx_tmp + i, crai_ext);
-                    if(stat(fnidx_tmp, &sbuf) == 0) {
+                    if(idx_stat_exists(fnidx_tmp)) {
                         *fnidx = fnidx_tmp;
                         return 1;
                     }
@@ -4867,14 +4899,14 @@ int hts_idx_check_local(const char *fn, int fmt, char **fnidx) {
         if ((l_fn > 3 && strcmp(fn_tmp+l_fn-3, ".gz") == 0) ||
             (l_fn > 5 && strcmp(fn_tmp+l_fn-5, ".bgzf") == 0)) {
             strcpy(fnidx_tmp + l_fn, gzi_ext);
-            gzi_ok = stat(fnidx_tmp, &sbuf)==0;
+            gzi_ok = idx_stat_exists(fnidx_tmp);
         }
 
         // Now check for .fai.  Occurs second as we're returning this
         // in *fnidx irrespective of whether we did gzi check.
         strcpy(fnidx_tmp + l_fn, fai_ext);
         *fnidx = fnidx_tmp;
-        if (stat(fnidx_tmp, &sbuf) == 0)
+        if (idx_stat_exists(fnidx_tmp))
             return gzi_ok;
         else
             return 0;

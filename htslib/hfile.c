@@ -661,10 +661,42 @@ static size_t blksize(int fd)
 #endif
 }
 
+#if defined(_WIN32)
+/* For _wopen and MultiByteToWideChar, used by the wide-char filename path
+   in hopen_fd below (no-ops when already included via winsock2.h/io.h). */
+#include <windows.h>
+#include <io.h>
+#endif
+
 static hFILE *hopen_fd(const char *filename, const char *mode)
 {
     hFILE_fd *fp = NULL;
+#if defined(_WIN32)
+    /*
+      Windows' narrow open() interprets the filename in the ANSI code page,
+      so paths outside it (e.g. UTF-8 names passed by Python via PEP 529)
+      cannot be opened. Convert the UTF-8 name to UTF-16 and open via _wopen
+      instead. The two-call MultiByteToWideChar pattern with a dynamically
+      sized buffer means arbitrarily long paths are never truncated.
+      Plain _WIN32 only: the __MSYS__ runtime translates narrow paths itself.
+    */
+    int fd = -1;
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, filename, -1, NULL, 0);
+    wchar_t *wfilename = wlen > 0
+        ? (wchar_t *) malloc(wlen * sizeof (wchar_t)) : NULL;
+
+    if (wfilename != NULL) {
+        if (MultiByteToWideChar(CP_UTF8, 0, filename, -1, wfilename, wlen) > 0)
+            fd = _wopen(wfilename, hfile_oflags(mode), 0666);
+        else errno = EINVAL;
+        free(wfilename);
+    }
+    else {
+        errno = wlen > 0 ? ENOMEM : EINVAL;
+    }
+#else
     int fd = open(filename, hfile_oflags(mode), 0666);
+#endif
     if (fd < 0) goto error;
 
     fp = (hFILE_fd *) hfile_init(sizeof (hFILE_fd), mode, blksize(fd));

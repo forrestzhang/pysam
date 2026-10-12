@@ -36,14 +36,44 @@ compilable under MSVC's conforming preprocessor for the Phase 3 toolchain.
 cdef extern from *:
     """
     #ifdef _WIN32
+    #include <errno.h>
     #include <fcntl.h>
     #include <io.h>
+    #include <stdlib.h>
     #include <sys/stat.h>
+    #include <windows.h>
+    /* Narrow _open() interprets filenames in the ANSI code page, while pysam
+    hands over UTF-8 bytes (os.fsencode, PEP 529) -- so any path outside the
+    active code page cannot be opened. Route through _wopen on the UTF-16
+    conversion, using the same two-call MultiByteToWideChar pattern
+    (dynamically sized buffer, no MAX_PATH truncation) as htslib's
+    hopen_fd shim in hfile.c. Binary mode and pmode masking are preserved. */
+    #if defined(__GNUC__)
+    #define PSAM_UNUSED __attribute__((unused))
+    #else
+    #define PSAM_UNUSED
+    #endif
+    static int PSAM_UNUSED psam_wopen(const char *path, int flags, int mode) {
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+        int fd = -1;
+        wchar_t *wpath = wlen > 0
+            ? (wchar_t *) malloc(wlen * sizeof (wchar_t)) : NULL;
+
+        if (wpath != NULL) {
+            if (MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, wlen) > 0)
+                fd = _wopen(wpath, flags | _O_BINARY,
+                            mode & (_S_IREAD | _S_IWRITE));
+            else errno = EINVAL;
+            free(wpath);
+        }
+        else {
+            errno = wlen > 0 ? ENOMEM : EINVAL;
+        }
+        return fd;
+    }
     #define psam_dup(fd)            _dup(fd)
-    #define psam_open2(path, flags) \
-        _open(path, (flags) | _O_BINARY)
-    #define psam_open3(path, flags, mode) \
-        _open(path, (flags) | _O_BINARY, (mode) & (_S_IREAD | _S_IWRITE))
+    #define psam_open2(path, flags) psam_wopen(path, flags, 0)
+    #define psam_open3(path, flags, mode) psam_wopen(path, flags, (mode))
     #define psam_read(fd, buf, count)    _read(fd, buf, count)
     #define psam_close(fd)               _close(fd)
     #define PSAM_STDOUT_FILENO           1
