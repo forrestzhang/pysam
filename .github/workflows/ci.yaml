@@ -251,7 +251,11 @@ jobs:
         run:  echo "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin" >> "$GITHUB_PATH"
 
       - name: Install prerequisite Python libraries
-        run:  pip install Cython mypy pytest setuptools
+        # --upgrade: python.org 3.10/3.11 bundle setuptools 65.5.0, whose build
+        # stack detaches the process stdout stream (logging errors in the build,
+        # pytest dies at collection with "underlying buffer has been detached");
+        # 3.12+ bundle nothing and resolve a current setuptools anyway
+        run:  pip install --upgrade Cython mypy pytest setuptools
 
       - name: Build (directly from checkout)
         run:  python setup.py build
