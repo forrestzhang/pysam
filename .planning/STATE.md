@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 03
 current_phase_name: MSVC 构建系统
 status: executing
-stopped_at: Phase 02 complete, ready to plan Phase 3
-last_updated: "2026-10-12T11:54:52.764Z"
+stopped_at: Completed 03-01-PLAN.md
+last_updated: "2026-10-12T12:26:13.727Z"
 last_activity: 2026-10-12
-last_activity_desc: Phase 02 complete, transitioned to Phase 3
-state_head: 47c4df2ff97a27601544495dcb31a8bd8e70e65f
+last_activity_desc: Phase 03 execution started
+state_head: 14cedd97d3cf0783ba2dca22d37d8c16891c819e
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 12
-  completed_plans: 7
+  completed_plans: 8
   percent: 50
 ---
 
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-12)
 
 **Core value:** Windows 用户能够 `pip install` 拿到 wheel 并正常使用 pysam 的全部功能（htslib API 绑定 + samtools/bcftools 命令封装），完整测试套件在 Windows 上通过。
-**Current focus:** Phase 3 — MSVC 构建系统
+**Current focus:** Phase 03 — MSVC 构建系统
 
 ## Current Position
 
-Phase: 03 (MSVC 构建系统) — READY TO EXECUTE
-Plan: Not started
+Phase: 03 (MSVC 构建系统) — EXECUTING
+Plan: 2 of 5
 Status: Ready to execute
-Last activity: 2026-10-12 — Phase 02 complete, transitioned to Phase 3
+Last activity: 2026-10-12 — Phase 03 execution started
 
 Progress: [█████░░░░░] 50%
 
@@ -66,6 +66,7 @@ Progress: [█████░░░░░] 50%
 | Phase 02 P02 | 49 min | 3 tasks | 8 files |
 | Phase 02 P03 | 54 min | 3 tasks | 12 files |
 | Phase 02 P04 | 53 min | 3 tasks | 3 files |
+| Phase 03 P01 | 28 min | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -93,6 +94,8 @@ Recent decisions affecting current work:
 - [Phase 02]: Plan 02-04: upstream #1274's four known failures reduce to one test-hygiene bug on our build - TestLogging check() leaked an open FileHandler (POSIX tolerates unlink-while-open; Windows WinError 32); fixed by closing the handler (POSIX no-op). testReadingFromFileWithoutIndex passes; zero exemptions needed for the checklist names.
 - [Phase 02]: Plan 02-04: httpserver must be platform-split - _pysam_dispatch runs samtools mains with the GIL held, so 02-03's thread server starved during dispatch-blocked libcurl transfers (ubuntu TestRemoteFileHTTP::testView timeout); POSIX restored upstream's child-process server verbatim, win32 keeps the spawn-safe thread variant. v2 remote-I/O note: Windows needs the process server or a nogil dispatch once libcurl is enabled.
 - [Phase 02]: Plan 02-04: TEST-02 baseline = fork CI direct (ubuntu, 3.14) on the phase-final code SHA; node-id set reconciliation (not count arithmetic) shows collection differs in exactly one module - typechecking (mypy on CI, absent from UCRT64 venv, documented as env-difference exemption). Windows collected 1040 = 1028 + phase's own 12 tests; run-vs-collect +2 = module-skip placeholders.
+- [Phase 03]: 03-01: GCC-builtin dispatch gate implemented as a feature macro (<tool>_DISPATCH_GCC_BUILTIN_JMP) defined once per file under #if defined(_WIN32) && !defined(_MSC_VER) — three gate sites (jmpbuf type/dispatch/exit) but the grep gate requires exactly one condition occurrence per file; template regenerates both twins byte-identically (sed-verified)
+- [Phase 03]: 03-01: coverage.c VLA kept verbatim in #else arm (zero-regression red line outranks the plan's grep==0 criterion, which contradicts its own #else-verbatim action text); MSVC arm heap-allocates under _MSC_VER — MSVC never sees a VLA
 
 ### Pending Todos
 
@@ -114,6 +117,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T09:57:56.199Z
-Stopped at: Phase 02 complete, ready to plan Phase 3
+Last session: 2026-10-12T12:26:13.679Z
+Stopped at: Completed 03-01-PLAN.md
 Resume file: None

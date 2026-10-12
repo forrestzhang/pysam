@@ -90,12 +90,12 @@ Plans:
   2. MSVC 构建产物上 `import pysam` 成功，且完整测试套件全绿
   3. 单一集中 MSVC shim 头文件覆盖 C99/VLA 缺口（无逐文件打地鼠）；按研究标志完成 clang-cl 回退路径评估
 
-**Plans:** 5 plans
+**Plans:** 1/5 plans executed
 
 Plans:
 **Wave 1** *(parallel — no file overlap)*
 
-- [ ] 03-01-PLAN.md — 携带约束闭环：D-17 implib 路径统一 + D-20 模板/双生文件锁步与编译器门 + VLA/[static] C99 修复 + WR-01 _collect UTF-8 解码（BUILD-02 前置）
+- [x] 03-01-PLAN.md — 携带约束闭环：D-17 implib 路径统一 + D-20 模板/双生文件锁步与编译器门 + VLA/[static] C99 修复 + WR-01 _collect UTF-8 解码（BUILD-02 前置）
 - [ ] 03-02-PLAN.md — vendor/ 依赖树：zlib/bzip2/xz/musl-regex 官方渠道采购 + SHA-256 溯源清单 + cl 编译探针工具
 
 **Wave 2** *(blocked on 03-01 setup.py 顺序 + 03-02 vendor 就位)*
@@ -140,7 +140,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 |-------|----------------|--------|-----------|
 | 1. MinGW-w64 构建系统 | 3/3 | Complete    | 2026-10-01 |
 | 2. 可移植性加固与测试全绿 | 4/4 | Complete    | 2026-10-12 |
-| 3. MSVC 构建系统 | 0/5 | Planned    | - |
+| 3. MSVC 构建系统 | 1/5 | In Progress | - |
 | 4. Windows CI 与 wheel 分发 | 0/TBD | Not started | - |
 
 ---
