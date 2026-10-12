@@ -257,5 +257,7 @@ jobs:
         run:  python setup.py build
 
       - name: Run tests
+        # Git Bash does not glob-expand the backslash form of $GITHUB_WORKSPACE;
+        # cygpath -m yields a forward-slash Windows path that both globs and imports
         run: |
-          PYTHONPATH=$(echo $GITHUB_WORKSPACE/build/lib.*) pytest
+          PYTHONPATH=$(echo $(cygpath -m "$GITHUB_WORKSPACE")/build/lib.*) pytest
