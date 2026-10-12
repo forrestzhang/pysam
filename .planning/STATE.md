@@ -4,16 +4,16 @@ milestone: v4.3.1
 current_phase: 04
 current_phase_name: Windows CI 与 wheel 分发
 status: executing
-stopped_at: Phase 03 complete, ready to plan Phase 4
-last_updated: "2026-10-12T18:28:35.624Z"
+stopped_at: Completed 04-01-PLAN.md (CI-01 windows job green 3.10-3.15)
+last_updated: "2026-10-12T19:27:29.170Z"
 last_activity: 2026-10-13
-last_activity_desc: Phase 03 complete, transitioned to Phase 4
-state_head: 78890a0e1b374ca25eada1f41927b51230c0e1f9
+last_activity_desc: Phase 04 execution started
+state_head: 207b69017d2dad44825f42ba7f973d560a4720ef
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 15
-  completed_plans: 12
+  completed_plans: 13
 ---
 
 # Project State
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-12)
 
 **Core value:** Windows 用户能够 `pip install` 拿到 wheel 并正常使用 pysam 的全部功能（htslib API 绑定 + samtools/bcftools 命令封装），完整测试套件在 Windows 上通过。
-**Current focus:** Phase 4 — Windows CI 与 wheel 分发
+**Current focus:** Phase 04 — Windows CI 与 wheel 分发
 
 ## Current Position
 
-Phase: 04 (Windows CI 与 wheel 分发) — READY TO EXECUTE
-Plan: Not started
+Phase: 04 (Windows CI 与 wheel 分发) — EXECUTING
+Plan: 2 of 3
 Status: Ready to execute
-Last activity: 2026-10-13 — Phase 03 complete, transitioned to Phase 4
+Last activity: 2026-10-13 — Phase 04 execution started
 
 Progress: [████████░░] 75%
 
@@ -72,6 +72,7 @@ Progress: [████████░░] 75%
 | Phase 03 P03 | 26 min | 3 tasks | 12 files |
 | Phase 03 P04 | 118 min | 3 tasks | 21 files |
 | Phase 03 P05 | 68 min | 3 tasks | 10 files |
+| Phase 04 P01 | 56 min | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -111,6 +112,9 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-05: MSVC suite green via root-cause fixes, not skips -- fd double-close (dup at lend sites), WR-01 binary-capture regression (strict-first decode), GNU-getopt optind reinit, C11 assert portability; 1028/15 both toolchains
 - [Phase 03]: SC-3: cl.exe-first, clang-cl documented contingency only -- 1.24-tree error surface is 2 C99 sites + finite shim, both closed; premise of prior-art clang-cl-for-VLAs advice superseded
 - [Phase 03]: CI syntax floor = oldest supported Python (3.9): PEP 701 f-string backslash killed py3.9-3.11 cells though 3.13/3.14 accept it; ast.parse(feature_version=(3,9)) as pre-push gate
+- [Phase 04]: [Phase 04-01]: Windows CI test step globs build/lib.* via cygpath -m $GITHUB_WORKSPACE - Git Bash on runners does not expand globs against backslash-form Windows paths (raw $GITHUB_WORKSPACE echoed literally; ModuleNotFoundError at pytest collection).
+- [Phase 04]: [Phase 04-01]: Windows CI pip prerequisites need --upgrade - python.org 3.10/3.11 hostpythons bundle setuptools 65.5.0 (pip no-ops without -U) and that generation detaches the process stdout stream during the MSVC build (logging errors; pytest dies at collection with 'underlying buffer has been detached'); 3.12+ bundle nothing and were green from the start. Locally reproduced with setuptools==65.5.0 vs 84.0.0.
+- [Phase 04]: [Phase 04-01]: windows (3.11) cell's extra skip is upstream-owned hygiene (skipif testIteratorOutOfScope on CPython 3.11 'invalid accesses crash'), not a runner anomaly; all six cells 1031-1032 passed / 16-17 skipped, delta vs local 1028/15 reconciles in 04-CI-VALIDATION.md.
 
 ### Pending Todos
 
@@ -132,6 +136,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T16:49:40.153Z
-Stopped at: Phase 03 complete, ready to plan Phase 4
+Last session: 2026-10-12T19:27:29.085Z
+Stopped at: Completed 04-01-PLAN.md (CI-01 windows job green 3.10-3.15)
 Resume file: None

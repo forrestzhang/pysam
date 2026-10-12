@@ -27,7 +27,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### CI 与分发 (CI & Distribution)
 
-- [ ] **CI-01**: Windows CI — GitHub Actions 增加 `windows-latest` runner（先手工 build+pytest job，验证后接入 cibuildwheel）
+- [x] **CI-01**: Windows CI — GitHub Actions 增加 `windows-latest` runner（先手工 build+pytest job，验证后接入 cibuildwheel）
 - [ ] **CI-02**: wheel 分发 — MSVC 产出自包含 `win_amd64` wheel，delvewheel 修复 + 清洁机安装冒烟测试作为发布门槛，经 fork 渠道（GitHub Releases）分发
 - [ ] **CI-03**: Python 版本对齐 — wheel 覆盖上游支持面（3.10–3.15，以 `python_requires` 为准）
 
@@ -73,7 +73,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PORT-04 | Phase 2 | Complete |
 | TEST-01 | Phase 2 | Complete |
 | TEST-02 | Phase 2 | Complete |
-| CI-01 | Phase 4 | Pending |
+| CI-01 | Phase 4 | Complete |
 | CI-02 | Phase 4 | Pending |
 | CI-03 | Phase 4 | Pending |
 

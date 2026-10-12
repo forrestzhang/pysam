@@ -122,12 +122,12 @@ Plans:
   3. 发布门槛生效：清洁 Windows 机器安装 wheel 并 import + 打开 BAM 的冒烟测试通过后才允许发布
   4. wheel 经 fork 渠道发布到 GitHub Releases，Windows 用户 pip 安装后 htslib API 绑定与 samtools/bcftools 命令分派全部可用
 
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 04-01-PLAN.md — ci.yaml 追加独立 `windows` direct job（3.10–3.15 全矩阵 build+pytest，符号门在 runner 上实跑）— 加法式零回归（CI-01, SC-1）
+- [x] 04-01-PLAN.md — ci.yaml 追加独立 `windows` direct job（3.10–3.15 全矩阵 build+pytest，符号门在 runner 上实跑）— 加法式零回归（CI-01, SC-1）
 
 **Wave 2** *(blocked on 04-01 — SC-1 顺序：direct job 先绿，才接 cibuildwheel)*
 
@@ -154,7 +154,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 1. MinGW-w64 构建系统 | 3/3 | Complete    | 2026-10-01 |
 | 2. 可移植性加固与测试全绿 | 4/4 | Complete    | 2026-10-12 |
 | 3. MSVC 构建系统 | 5/5 | Complete    | 2026-10-13 |
-| 4. Windows CI 与 wheel 分发 | 0/3 | Planned | - |
+| 4. Windows CI 与 wheel 分发 | 1/3 | In Progress | - |
 
 ---
 *Roadmap created: 2026-09-17*
