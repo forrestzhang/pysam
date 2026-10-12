@@ -192,14 +192,22 @@ typedef struct tre_mem_struct {
 } *tre_mem_t;
 
 #define tre_mem_new_impl   __tre_mem_new_impl
+/* MSVC compat edit 2 (03-04): the three declarations below carried
+   musl's `hidden` visibility qualifier upstream. The pysam MSVC arm
+   compiles this tree with a single global define set shared with
+   htslib, and -Dhidden= collides with htslib's own local variables
+   named `hidden` (textutils.c:246) -- so the qualifier is dropped here
+   instead. `hidden` expands to __attribute__((visibility("hidden")))
+   inside musl and to nothing in a static compile; this tree is compiled
+   statically into libchtslib, so visibility is irrelevant. */
+
 #define tre_mem_alloc_impl __tre_mem_alloc_impl
 #define tre_mem_destroy    __tre_mem_destroy
 
-hidden tre_mem_t tre_mem_new_impl(int provided, void *provided_block);
-hidden void *tre_mem_alloc_impl(tre_mem_t mem, int provided, void *provided_block,
-                                int zero, size_t size);
-
 /* Returns a new memory allocator or NULL if out of memory. */
+tre_mem_t tre_mem_new_impl(int provided, void *provided_block);
+void *tre_mem_alloc_impl(tre_mem_t mem, int provided, void *provided_block,
+                         int zero, size_t size);
 #define tre_mem_new()  tre_mem_new_impl(0, NULL)
 
 /* Allocates a block of `size' bytes from `mem'.  Returns a pointer to the
@@ -226,7 +234,7 @@ hidden void *tre_mem_alloc_impl(tre_mem_t mem, int provided, void *provided_bloc
 
 
 /* Frees the memory allocator and all memory allocated with it. */
-hidden void tre_mem_destroy(tre_mem_t mem);
+void tre_mem_destroy(tre_mem_t mem);
 
 #define xmalloc malloc
 #define xcalloc calloc

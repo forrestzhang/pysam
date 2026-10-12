@@ -294,7 +294,12 @@ def write_configvars_header(filename, ext, prefix):
     log.info("creating %s for '%s' extension", filename, ext.name)
     with open(filename, "w") as outf:
         for var, value in config.items():
-            outf.write(f'#define {prefix}_{var} "{value}"\n')
+            # Escape backslashes for the C string literal: Windows paths
+            # (D:\Github\pysam\vendor\xz\...) otherwise produce invalid
+            # escape sequences -- "\x" + non-hex digit is a hard C2153
+            # error under cl (03-04). POSIX paths carry no backslashes,
+            # so this write is byte-identical there.
+            outf.write(f'#define {prefix}_{var} "{value.replace("\\", "\\\\")}"\n')
 
 
 @contextmanager
@@ -469,7 +474,13 @@ class cy_build_ext(build_ext):
             # /std:c11 since VS2019 16.8; /utf-8 pins the source charset
             # (avoids C4819 on cp936 consoles). This mirrors how the
             # -Wno-* block below is gated away from Windows compilers.
-            log.info("msvc: skipping C99 probe; using /std:c11 /utf-8")
+            # (03-04: these flags are carried into the build by the
+            # extra_compile_args.extend in the MSVC module-graph block --
+            # MSVCCompiler has no compiler/compiler_so attributes, so the
+            # set_executables plumbing here cannot deliver them; this arm
+            # exists to SKIP the unportable probe.)
+            log.info("msvc: skipping C99 probe; /std:c11 /utf-8 applied "
+                     "via extra_compile_args (MSVC module-graph block)")
             return ["/std:c11", "/utf-8"]
         compiler = getattr(self.compiler, "compiler", "C compiler")
         if isinstance(compiler, list): compiler = compiler[0]
@@ -584,14 +595,26 @@ class cy_build_ext(build_ext):
                     os.path.dirname(self.get_ext_fullpath(ext.name)),
                     os.path.splitext(mod + suffix)[0] + ".lib")
                 ext.extra_link_args.append("/IMPLIB:" + implib)
-                if ext.name == "pysam.libchtslib":
-                    # Supplementary exports: the enumerated un-annotated
-                    # gaps only (win32/chtslib_exports.def); the annotated
-                    # surface is carried by htslib's HTSLIB_EXPORT
-                    # machinery. Consumer LNK2001 self-detects any drift.
+                # Supplementary exports. GNU ld's --export-all-symbols
+                # (the mingw32 arm) exports every global symbol, so
+                # cross-module consumers bind implicitly; link.exe
+                # exports only dllexport annotations plus /DEF: entries.
+                # libchtslib: htslib's HTSLIB_EXPORT machinery carries
+                # the API (activated by the HTS_BUILDING_LIBRARY compile
+                # define); the .def adds the un-annotated gaps and the
+                # two htslib_util.c symbols the Cython extensions
+                # reference (03-04). libcsamtools/libcbcftools: the
+                # dispatch family consumed by libcutils (03-04). On all
+                # three, consumer LNK2001 self-detects drift.
+                _msvc_export_defs = {
+                    "pysam.libchtslib": "chtslib_exports.def",
+                    "pysam.libcsamtools": "samtools_exports.def",
+                    "pysam.libcbcftools": "bcftools_exports.def",
+                }
+                if ext.name in _msvc_export_defs:
                     ext.extra_link_args.append(
                         "/DEF:" + os.path.abspath(
-                            os.path.join("win32", "chtslib_exports.def")))
+                            os.path.join("win32", _msvc_export_defs[ext.name])))
             else:
                 # Emit an import library beside each built module so the other
                 # extensions' -l flags resolve through library_dirs (GNU ld
@@ -973,11 +996,30 @@ if IS_MSVC_PYTHON:
     # cl pass (sets per vendor/README.md: zlib 15 core TUs, bzip2 7
     # library TUs, xz liblzma tree + the two src/common support TUs,
     # musl regex 4 TUs -- regfree is defined inside regcomp.c).
+    # xz exclusions (the autotools/cmake builds never put these in the
+    # library): the *_small.c size-optimized CRC variants are the
+    # HAVE_SMALL configuration -- our no-config route leaves HAVE_SMALL
+    # unset, so crc32_fast.c/crc64_fast.c carry the tables via their
+    # *_table_le.h headers, and the small files' runtime-initialized
+    # lzma_crc32_table[1][256] definition collides with the const
+    # [8][256] one (C2369/C2166, first full link, 03-04); the
+    # *tablegen*.c / *_consts_gen.c files are standalone table-regen
+    # tools (own main()), not library sources. stream_decoder_mt.c is
+    # the multithreaded decoder: the no-config route leaves threading
+    # off (mythread.h defines nothing without MYTHREAD_ENABLED; htslib
+    # uses the single-threaded lzma_stream_decoder in the _st TU).
+    _xz_tool_tus = ("crc32_small.c", "crc64_small.c",
+                    "crc32_tablegen.c", "crc64_tablegen.c",
+                    "crc_clmul_consts_gen.c", "fastpos_tablegen.c",
+                    "price_tablegen.c", "stream_decoder_mt.c",
+                    "stream_encoder_mt.c")
     msvc_vendor_sources = (
         sorted(glob.glob(os.path.join("vendor", "zlib", "*.c"))) +
         sorted(glob.glob(os.path.join("vendor", "bzip2", "*.c"))) +
-        sorted(glob.glob(os.path.join("vendor", "xz", "src", "liblzma",
-                                      "**", "*.c"), recursive=True)) +
+        [s for s in sorted(glob.glob(os.path.join(
+            "vendor", "xz", "src", "liblzma", "**", "*.c"),
+            recursive=True))
+         if os.path.basename(s) not in _xz_tool_tus] +
         [os.path.join("vendor", "xz", "src", "common", "tuklib_physmem.c"),
          os.path.join("vendor", "xz", "src", "common", "tuklib_cpucores.c")] +
         sorted(glob.glob(os.path.join("vendor", "regex", "*.c")))
@@ -1000,13 +1042,41 @@ if IS_MSVC_PYTHON:
     msvc_tool_private_sources = [os.path.join("win32", "getopt.c")]
 
     # Vendored-tree configuration macros (vendor/README.md recorded
-    # sets): xz's no-config route and the musl regex defines. Applied
-    # globally on the MSVC arm -- every other consumer ignores them.
+    # sets): xz's full-feature static configuration and the musl regex
+    # limits macros. Applied globally on the MSVC arm -- every other
+    # consumer ignores them. The xz set is what autotools config.h
+    # carries for a full build (the no-config route of 03-02's probe
+    # covered only standalone TUs: without the HAVE_DECODER/ENCODER
+    # feature keys filter_decoder.c's decoders[] array is EMPTY, and
+    # cl ICEs on its zero-size ARRAY_SIZE -- C4034 then C1001, 03-04).
+    # Deliberately NOT defined: HAVE_SMALL (excluded TUs),
+    # HAVE_SYMBOL_VERSIONS_LINUX / HAVE_CRC_X86_ASM (ELF/GNU-as only),
+    # HAVE_FUNC_ATTRIBUTE_CONSTRUCTOR / HAVE_VISIBILITY /
+    # HAVE___BUILTIN_ASSUME_ALIGNED (GCC-isms), HAVE_USABLE_CLMUL (the
+    # generic CRC fallback is the proven path under cl), HAVE_SMALL's
+    # thread machinery (MYTHREAD_* stays off). musl's `hidden` macro is
+    # NOT defined here either: a global -Dhidden= collides with htslib's
+    # local variables named `hidden` (textutils.c:246); the qualifier is
+    # instead dropped from vendor/regex/tre.h (compat edit 2, 03-04).
+    _xz_feature_defines = [
+        ("HAVE_DECODER_%s" % f, "1")
+        for f in ("ARM", "ARM64", "ARMTHUMB", "DELTA", "IA64", "LZMA1",
+                  "LZMA2", "POWERPC", "RISCV", "SPARC", "X86")
+    ] + [
+        ("HAVE_ENCODER_%s" % f, "1")
+        for f in ("ARM", "ARM64", "ARMTHUMB", "DELTA", "IA64", "LZMA1",
+                  "LZMA2", "POWERPC", "RISCV", "SPARC", "X86")
+    ] + [
+        ("HAVE_CHECK_CRC32", "1"), ("HAVE_CHECK_CRC64", "1"),
+        ("HAVE_CHECK_SHA256", "1"), ("HAVE_LZIP_DECODER", "1"),
+        ("HAVE_MF_HC3", "1"), ("HAVE_MF_HC4", "1"),
+        ("HAVE_MF_BT2", "1"), ("HAVE_MF_BT3", "1"), ("HAVE_MF_BT4", "1"),
+    ]
     define_macros.extend([
         ("HAVE_STDINT_H", "1"), ("HAVE_INTTYPES_H", "1"),
         ("HAVE_STDBOOL_H", "1"),
-        ("hidden", ""), ("RE_DUP_MAX", "255"), ("CHARCLASS_NAME_MAX", "14"),
-    ])
+        ("RE_DUP_MAX", "255"), ("CHARCLASS_NAME_MAX", "14"),
+    ] + _xz_feature_defines)
 
     # /FI force-includes the central compat header into every TU (the
     # mapping list must be global -- most call sites never include the
@@ -1014,6 +1084,22 @@ if IS_MSVC_PYTHON:
     extra_compile_args.append(
         "/FI" + os.path.abspath(os.path.join("win32", "msvc",
                                              "msvc_compat.h")))
+
+    # cl dialect + source charset. These ride extra_compile_args because
+    # cy_build_ext.c99_compile_args() applies its return value through
+    # Compiler.set_executables('compiler'/'compiler_so') -- attributes
+    # UnixCCompiler defines but MSVCCompiler does not, so that plumbing
+    # is a verified no-op under cl (03-04, first full build). The
+    # probe-skip arm of c99_compile_args stays: it still prevents the
+    # unportable conftest_cstd.c probe from aborting the build.
+    # /std:c11 matches every research/vendor probe command line; /utf-8
+    # pins the source charset (cp936 consoles otherwise emit C4819).
+    # /GL- disables distutils' whole-program optimization (/GL + link
+    # /LTCG): the 14.50 backend hits a C1001 internal error during the
+    # LTCG pass on filter_decoder.obj (LNK1000 BuildImage ICE follows);
+    # upstream xz's own MSVC builds (CMake Release) never use /GL, so
+    # this also matches the proven upstream configuration. /O2 stays.
+    extra_compile_args.extend(["/std:c11", "/utf-8", "/GL-"])
 
 suffix = sysconfig.get_config_var('EXT_SUFFIX')
 

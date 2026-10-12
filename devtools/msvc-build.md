@@ -46,6 +46,18 @@ environment is the verified canonical invocation.
   rewritten from the checked-in `win32/config.h.msvc` on every run, and
   the htslib source list is the hard-coded mirror of `htslib/Makefile`
   `LIBHTS_OBJS` (see `MSVC_LIBHTS_OBJS` in setup.py).
+- Compile flags on the MSVC arm (setup.py): `/std:c11 /utf-8 /GL-`.
+  `/GL-` disables distutils' default whole-program optimization: the
+  cl 14.50 backend ICEs (C1001, UTC p2 pass) during link-time code
+  generation on `filter_decoder.c` under `/GL + /LTCG`. `/O2` stays;
+  upstream xz's own MSVC builds never use `/GL` either.
+- Cross-module exports come from htslib's `HTS_BUILDING_LIBRARY`
+  dllexport machinery plus three supplementary `/DEF:` lists
+  (`win32/chtslib_exports.def`, `win32/samtools_exports.def`,
+  `win32/bcftools_exports.def` — GNU ld's `--export-all-symbols` covers
+  the same surface implicitly on the MinGW path). A missing export
+  surfaces as LNK2001 in the consumer: that is the designed drift alarm
+  — fix the list, never the gate.
 
 ## One venv per toolchain
 

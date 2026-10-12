@@ -71,9 +71,22 @@ Kept beyond the strict minimum:
 - **bzip2**: no configuration header exists. Compile the 7 library TUs with
   `-I vendor/bzip2`. Upstream `makefile.msc` proves cl compatibility.
 - **xz/liblzma**: no `HAVE_CONFIG_H`. sysdefs.h falls back to direct header
-  assumptions; MSVC needs `-DHAVE_STDINT_H=1 -DHAVE_INTTYPES_H=1
-  -DHAVE_STDBOOL_H=1` (MSVC ships all three; without HAVE_STDBOOL_H the
-  fallback `typedef unsigned char _Bool` collides with the C11 builtin).
+  assumptions; MSVC needs the full-feature define set below (03-04: the
+  bare three-define probe route only covered standalone TUs — without
+  the feature keys, `filter_decoder.c`'s `decoders[]` array is empty and
+  cl ICEs on the zero-size ARRAY_SIZE, C4034 then C1001). Defines:
+  `-DHAVE_STDINT_H=1 -DHAVE_INTTYPES_H=1 -DHAVE_STDBOOL_H=1`
+  (types) plus the autotools-equivalent full feature set —
+  `-DHAVE_DECODER_{ARM,ARM64,ARMTHUMB,DELTA,IA64,LZMA1,LZMA2,POWERPC,RISCV,SPARC,X86}=1`,
+  `-DHAVE_ENCODER_{same eleven}=1`,
+  `-DHAVE_CHECK_{CRC32,CRC64,SHA256}=1`, `-DHAVE_LZIP_DECODER=1`,
+  `-DHAVE_MF_{HC3,HC4,BT2,BT3,BT4}=1`. Deliberately NOT defined:
+  `HAVE_SMALL` (its TUs are excluded from the graph),
+  `HAVE_SYMBOL_VERSIONS_LINUX`/`HAVE_CRC_X86_ASM` (ELF/GNU-as),
+  `HAVE_FUNC_ATTRIBUTE_CONSTRUCTOR`/`HAVE_VISIBILITY`/
+  `HAVE___BUILTIN_ASSUME_ALIGNED` (GCC-isms), `HAVE_USABLE_CLMUL`
+  (the generic CRC fallback is the proven path under cl), and all
+  `MYTHREAD_*` (single-threaded route).
   Include dirs:
   `-I vendor/xz/src/liblzma/api -I vendor/xz/src/liblzma/common
   -I vendor/xz/src/liblzma/check -I vendor/xz/src/liblzma/lz
@@ -84,6 +97,19 @@ Kept beyond the strict minimum:
   `MYTHREAD_VISTA`); htslib drives liblzma single-threaded through
   `lzma_stream_decoder`. Exact probe command lines proven in plan 03-02
   Task 3 are appended at the bottom of this file.
+  Build-graph exclusions (03-04, first full MSVC link): the recursive
+  liblzma glob must drop `check/crc32_small.c`, `check/crc64_small.c`
+  (HAVE_SMALL variants; without HAVE_SMALL the fast TUs carry the const
+  tables and the small TUs' `lzma_crc32_table[1][256]` collides with the
+  `[8][256]` const definition) and the five standalone regen tools
+  (`crc32_tablegen.c`, `crc64_tablegen.c`, `crc_clmul_consts_gen.c`,
+  `fastpos_tablegen.c`, `price_tablegen.c` -- own main(), never library
+  sources in the upstream builds) and the multithreaded codecs
+  `common/stream_decoder_mt.c` / `common/stream_encoder_mt.c` (the
+  recorded single-threaded route defines no MYTHREAD_*, so the mt TUs
+  have no types to compile against).
+  The files stay in-tree; setup.py's
+  module graph filters them.
 
 ## vendor/regex (musl-derived POSIX regex)
 
@@ -100,16 +126,20 @@ Files and their provenance state:
 |------|-------|
 | regcomp.c, regerror.c, tre-mem.c, COPYRIGHT | **byte-identical** to musl 1.2.6 (`src/regex/*`, top-level `COPYRIGHT`) |
 | regexec.c | **one compat edit** — `pmatch[restrict]` array-parameter qualifier dropped (see below) |
-| tre.h | **one compat edit** — ALIGN macro's `(long)` casts widened to `(size_t)` (see below) |
+| tre.h | **two compat edits** — ALIGN macro's `(long)` casts widened to `(size_t)` (03-02); the three `hidden` visibility qualifiers dropped (03-04 — the module graph's global define set is shared with htslib, and `-Dhidden=` collides with htslib's local variables named `hidden`, e.g. textutils.c:246; visibility is irrelevant in a static compile) |
 | regex.h | **adapted** — the only header adaptation; see below |
 | locale_impl.h | **vendored shim** (not upstream content) — see below |
 
-MSVC compile defines (recorded for plan 03-03): `-D hidden= -D RE_DUP_MAX=255
--D CHARCLASS_NAME_MAX=14` — `hidden` is musl's visibility macro (used on 3
-declarations in tre.h; empty is correct for a static compile), and
-RE_DUP_MAX/CHARCLASS_NAME_MAX live in musl's `include/limits.h` extensions
-(values from musl 1.2.6 limits.h lines 85/81; a cross-check of all 112 musl
-limits.h macros against the vendored TUs shows no other missing ones).
+MSVC compile defines (recorded for plan 03-03): `-D RE_DUP_MAX=255
+-D CHARCLASS_NAME_MAX=14` — RE_DUP_MAX/CHARCLASS_NAME_MAX live in musl's
+`include/limits.h` extensions (values from musl 1.2.6 limits.h lines
+85/81; a cross-check of all 112 musl limits.h macros against the
+vendored TUs shows no other missing ones). musl's `hidden` visibility
+macro is NOT defined by the build: the define set is global to the MSVC
+arm and collides with htslib's `hidden` locals (textutils.c:246), so
+the three `hidden` qualifiers in tre.h are dropped instead (tre.h
+compat edit 2, 03-04; empty expansion was their static-compile meaning
+anyway).
 
 - `regfree` is *not* a separate TU in musl 1.2.6: it is defined inside
   `regcomp.c` (regfree coverage therefore present in-TU). `tre-mem.c` is the
@@ -151,8 +181,8 @@ limits.h macros against the vendored TUs shows no other missing ones).
 The four TUs contain no GNU extensions and no VLAs (scanned: `__attribute__`,
 `__thread`, `weak_alias`, `__builtin`, `__asm__`, `__GNUC__`, variable-length
 arrays — all zero hits; the one external musl macro they reference is
-`hidden`, neutralized by the empty define above). Compile with
-`-I vendor/regex -D hidden= -D RE_DUP_MAX=255 -D CHARCLASS_NAME_MAX=14`.
+`hidden`, dropped from tre.h's three declarations at 03-04). Compile with
+`-I vendor/regex -D RE_DUP_MAX=255 -D CHARCLASS_NAME_MAX=14`.
 Known-benign MSVC warnings (surfaced by the probe, /W3): C4005 NDEBUG
 redefinition (tre.h defines NDEBUG that distutils' default /DNDEBUG already
 provides — cosmetic) and one C4267 size_t-to-int narrowing in tre-mem.c
