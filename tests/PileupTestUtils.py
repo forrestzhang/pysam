@@ -31,13 +31,12 @@ def build_depth_with_samtoolsshell(fn):
 
 
 def build_depth_with_samtoolspipe(fn):
-    FNULL = open(os.devnull, 'w')
-    with subprocess.Popen(["samtools", "mpileup", fn],
-                          stdin=subprocess.PIPE,
-                          stdout=subprocess.PIPE,
-                          stderr=FNULL) as proc:
-        data = [x.split() for x in proc.stdout.readlines()]
-        return [int(x[3]) for x in data]
+    # D2-05 (Phase 2): no external samtools binary on Windows, so the
+    # samtools side of the comparison runs through pysam's own mpileup
+    # dispatch (column and type semantics unchanged).  The external-binary
+    # oracle for these builders now lives in the fork CI ubuntu job.
+    return [int(x.split()[3])
+            for x in pysam.samtools.mpileup(fn).splitlines()]
 
 
 def build_depth_with_filter_with_pysam(*args, **kwargs):
@@ -56,13 +55,10 @@ def build_query_bases_with_samtoolsshell(fn):
 
 
 def build_query_bases_with_samtoolspipe(fn, *args, **kwargs):
-    FNULL = open(os.devnull, 'w')
-    with subprocess.Popen(["samtools", "mpileup", fn] + list(args),
-                          stdin=subprocess.PIPE,
-                          stdout=subprocess.PIPE,
-                          stderr=FNULL) as proc:
-        stdout = proc.stdout.read().decode()
-        return [x.split()[4] for x in stdout.splitlines()]
+    # D2-05 (Phase 2): mpileup dispatch instead of an external samtools
+    # pipe (see build_depth_with_samtoolspipe).
+    return [x.split()[4]
+            for x in pysam.samtools.mpileup(fn, *args).splitlines()]
 
 
 def build_query_bases_with_samtoolspysam(fn, *args):
@@ -107,13 +103,10 @@ def build_query_names_with_pysam(*args, **kwargs):
 
 
 def build_query_qualities_with_samtoolspipe(fn):
-    FNULL = open(os.devnull, 'w')
-    with subprocess.Popen(["samtools", "mpileup", fn],
-                          stdin=subprocess.PIPE,
-                          stdout=subprocess.PIPE,
-                          stderr=FNULL) as proc:
-        data = [force_str(x).split()[5] for x in proc.stdout.readlines()]
-    return data
+    # D2-05 (Phase 2): mpileup dispatch instead of an external samtools
+    # pipe (see build_depth_with_samtoolspipe).
+    return [x.split()[5]
+            for x in pysam.samtools.mpileup(fn).splitlines()]
 
 
 def build_query_qualities_with_pysam(*args, **kwargs):
@@ -125,13 +118,10 @@ def build_query_qualities_with_pysam(*args, **kwargs):
 
 
 def build_mapping_qualities_with_samtoolspipe(fn):
-    FNULL = open(os.devnull, 'w')
-    with subprocess.Popen(["samtools", "mpileup", "-s", fn],
-                          stdin=subprocess.PIPE,
-                          stdout=subprocess.PIPE,
-                          stderr=FNULL) as proc:
-        data = [force_str(x).split()[6] for x in proc.stdout.readlines()]
-    return data
+    # D2-05 (Phase 2): mpileup dispatch instead of an external samtools
+    # pipe (see build_depth_with_samtoolspipe).
+    return [x.split()[6]
+            for x in pysam.samtools.mpileup("-s", fn).splitlines()]
 
 
 def build_mapping_qualities_with_pysam(*args, **kwargs):

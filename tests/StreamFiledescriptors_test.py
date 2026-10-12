@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 import threading
 import errno
 
@@ -43,10 +44,20 @@ class TestStream:
         return 0, read
 
     def test_text_processing(self):
-        with subprocess.Popen('head -n200',
-                              stdin=subprocess.PIPE,
-                              stdout=subprocess.PIPE,
-                              shell=True) as proc:
+        # D2-05 (Phase 2): the POSIX head utility does not exist on
+        # Windows, so the pipe consumer is a small sys.executable -c
+        # script (list form, no shell) that echoes exactly 200 lines and
+        # exits - the test's purpose, a real subprocess consuming an fd
+        # pipe, is unchanged.
+        with subprocess.Popen(
+                [sys.executable, "-c",
+                 "import sys\n"
+                 "for i, line in enumerate(sys.stdin):\n"
+                 "    sys.stdout.write(line)\n"
+                 "    if i >= 199:\n"
+                 "        break\n"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE) as proc:
 
             in_stream = AlignmentFile(os.path.join(BAM_DATADIR, 'ex1.bam'))
             out_stream = AlignmentFile(

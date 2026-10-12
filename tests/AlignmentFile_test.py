@@ -253,9 +253,10 @@ class TestCRAMFromFileNo(TestCRAMFromFetch):
 
 class TestSAMFromStringIO(TestBAMFromFetch):
     def testRaises(self):
-        statement = "samtools view -h {}".format(
-            os.path.join(BAM_DATADIR, "ex3.bam"))
-        stdout = subprocess.check_output(statement.split(" "), encoding="ascii")
+        # D2-05 (Phase 2): in-process dispatch instead of the external
+        # samtools binary (view already returns a str).
+        stdout = pysam.samtools.view("-h",
+                                     os.path.join(BAM_DATADIR, "ex3.bam"))
         bam = StringIO()
         bam.write(stdout)
         bam.seek(0)
