@@ -12,6 +12,14 @@
 ; Drift self-detects: a consumer symbol missing from the union fails
 ; loudly as LNK2001 at link time. Do NOT grow this into a
 ; hand-maintained full export list (03-RESEARCH Anti-Patterns).
+;
+; 03-04 additions (first full link): htslib_util.c is compiled into
+; libchtslib, and its two project-owned symbols are consumed across
+; module boundaries by the Cython extensions -- pysam/htslib_util.h
+; declares them, libcalignedsegment references both. aux_type2size is
+; also defined static-inline inside htslib/sam.c (file-local there);
+; htslib_util.c's non-static definition is the exportable one.
+; pysam_seq_comp_table is a data symbol (DATA keyword).
 
 EXPORTS
     hts_lib_shutdown
@@ -21,3 +29,5 @@ EXPORTS
     hts_opt_free
     hts_parse_format
     hts_parse_opt_list
+    aux_type2size
+    pysam_seq_comp_table DATA

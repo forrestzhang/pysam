@@ -1,0 +1,16 @@
+; win32/bcftools_exports.def -- libcbcftools supplementary export list
+; for the MSVC link (BUILD-02, plan 03-04).
+;
+; Same rationale as win32/samtools_exports.def: the dispatch family is
+; defined in bcftools/bcftools.pysam.c, declared in
+; bcftools/bcftools.pysam.h, and consumed cross-module by
+; pysam/libcutils.pyx -- GNU ld exports it implicitly, link.exe needs
+; the explicit list. Consumer LNK2001 self-detects drift.
+
+EXPORTS
+    bcftools_dispatch
+    bcftools_set_stdout
+    bcftools_set_stderr
+    bcftools_close_stdout
+    bcftools_close_stderr
+    bcftools_set_stdout_fn

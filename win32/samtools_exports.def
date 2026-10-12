@@ -1,0 +1,22 @@
+; win32/samtools_exports.def -- libcsamtools supplementary export list
+; for the MSVC link (BUILD-02, plan 03-04).
+;
+; The MinGW arm relies on GNU ld's --export-all-symbols: every global
+; symbol is exported, so pysam.libcutils binds the dispatch family at
+; link time with no explicit list. link.exe exports only dllexport-
+; annotated symbols plus /DEF: entries, and the dispatch family (defined
+; in samtools/samtools.pysam.c, declared in samtools/samtools.pysam.h,
+; consumed by pysam/libcutils.pyx via the libcsamtools cimport) carries
+; no annotations. This list closes exactly that gap.
+;
+; Consumer LNK2001 self-detects drift (a newly cimported samtools_*
+; symbol missing here fails loudly at link). Do NOT grow this into an
+; export-all list.
+
+EXPORTS
+    samtools_dispatch
+    samtools_set_stdout
+    samtools_set_stderr
+    samtools_close_stdout
+    samtools_close_stderr
+    samtools_set_stdout_fn
