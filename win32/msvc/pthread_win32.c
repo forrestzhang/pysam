@@ -29,6 +29,7 @@
 #include <windows.h>
 
 #include "pthread.h"
+#include "dirent.h"
 #include "sys/time.h"
 
 /* ---------- threads ---------- */
@@ -305,4 +306,74 @@ int mkstemp(char *name_template) {
 int usleep(unsigned int usec) {
     Sleep(usec / 1000U);
     return 0;
+}
+
+int nanosleep(const struct timespec *req, struct timespec *rem) {
+    if (req == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    /* callers use hts_usleep-class retry backoffs (sub-second); rounding
+       sub-millisecond requests up to 1 ms matches every Sleep-based port */
+    Sleep((DWORD)(req->tv_sec * 1000UL + (req->tv_nsec + 999999UL) / 1000000UL));
+    if (rem) {
+        rem->tv_sec = 0;
+        rem->tv_nsec = 0;  /* unslept remainder: always fully slept */
+    }
+    return 0;
+}
+
+/* ---------- dirent (dirent.h drop-in's implementation) ---------- */
+
+DIR *opendir(const char *path) {
+    size_t n;
+    char *pat;
+    DIR *d;
+
+    if (path == NULL || (n = strlen(path)) == 0 || n > MAX_PATH - 3) {
+        errno = ENAMETOOLONG;
+        return NULL;
+    }
+    d = (DIR *)malloc(sizeof(DIR));
+    pat = (char *)malloc(n + 3);
+    if (d == NULL || pat == NULL) {
+        free(d); free(pat);
+        errno = ENOMEM;
+        return NULL;
+    }
+    memcpy(pat, path, n);
+    if (path[n-1] != '/' && path[n-1] != '\\') pat[n++] = '\\';
+    pat[n++] = '*';
+    pat[n] = '\0';
+    d->find = FindFirstFileA(pat, &d->data);
+    free(pat);
+    if (d->find == INVALID_HANDLE_VALUE) {
+        free(d);
+        errno = ENOENT;
+        return NULL;
+    }
+    d->first = 1;
+    d->ent.d_ino = 0;
+    return d;
+}
+
+struct dirent *readdir(DIR *dir) {
+    if (dir == NULL) return NULL;
+    if (dir->first) {
+        dir->first = 0;
+    } else if (!FindNextFileA(dir->find, &dir->data)) {
+        return NULL;
+    }
+    strncpy(dir->ent.d_name, dir->data.cFileName, sizeof(dir->ent.d_name) - 1);
+    dir->ent.d_name[sizeof(dir->ent.d_name) - 1] = '\0';
+    return &dir->ent;
+}
+
+int closedir(DIR *dir) {
+    BOOL ok;
+
+    if (dir == NULL) return -1;
+    ok = FindClose(dir->find);
+    free(dir);
+    return ok ? 0 : -1;
 }
