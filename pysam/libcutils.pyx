@@ -449,16 +449,27 @@ def _pysam_dispatch(collection,
     # get error messages
     def _collect(fn):
         out = []
+        data = None
         try:
             with open(fn, "rb") as inf:
-                # Binary read + explicit UTF-8 decode with replacement:
-                # captured tool output must never pass through the
-                # locale-default text codec, which silently mojibakes
-                # non-ASCII output on non-UTF-8 locales (WR-01), and
-                # decoding with replacement never raises.  Positional
-                # args per the cdef convention: encoding=None selects
-                # TEXT_ENCODING (utf-8).
-                out = decode_bytes(inf.read(), None, 'replace')
+                # Binary read + explicit UTF-8 decode: captured tool
+                # output must never pass through the locale-default text
+                # codec, which silently mojibakes non-ASCII output on
+                # non-UTF-8 locales (WR-01).  The decode is STRICT-first
+                # rather than replacement-always: well-formed UTF-8 text
+                # (the normal case, incl. CJK output) decodes to str with
+                # identical bytes either way, while data that is NOT valid
+                # UTF-8 is binary tool output -- e.g. reheader's and cat's
+                # BAM written to captured stdout -- which must be
+                # returned as raw bytes, not a lossy U+FFFD str
+                # (replacement decoding destroyed the BAM bytes and the
+                # samtools_test oracle's force_bytes() failed on the
+                # replacement chars; 03-05).  The bytes fallback is the
+                # pre-WR-01 behavior every consumer already handles.
+                data = inf.read()
+                out = data.decode(TEXT_ENCODING)
+        except UnicodeDecodeError:
+            out = data
         finally:
             os.remove(fn)
         return out
