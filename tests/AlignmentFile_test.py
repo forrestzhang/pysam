@@ -1752,6 +1752,7 @@ class TestLogging:
     '''
 
     def check(self, bamfile, log):
+        log_hand = None
         if log:
             logger = logging.getLogger('franklin')
             logger.setLevel(logging.INFO)
@@ -1764,6 +1765,14 @@ class TestLogging:
         with pysam.AlignmentFile(bamfile, 'rb') as bam:
             cols = bam.pileup()
         assert True
+
+        # Close the handler before teardown_method unlinks log.txt.
+        # win32 cannot unlink a file that is still open (WinError 32);
+        # POSIX tolerates it, so closing is a no-op change there.
+        # (02-04, D2-07 fix-first: test hygiene, not a platform exemption)
+        if log_hand is not None:
+            logger.removeHandler(log_hand)
+            log_hand.close()
 
     def teardown_method(self):
         if os.path.exists('log.txt'):
