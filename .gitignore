@@ -100,3 +100,6 @@ doc/_build/
 
 # MSYS2 UCRT64 dev venv (bootstrap build environment)
 _venv/
+
+# MSVC dev venv (BUILD-02; created from win-amd64 CPython, see devtools/msvc-build.md)
+_venv-msvc/

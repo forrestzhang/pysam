@@ -55,7 +55,10 @@ vs `build/temp.mingw*`, and the `*.cp313-win_amd64.pyd` vs
 `*.cp314-mingw*.pyd` extension suffixes):
 
     D:/miniconda3/python.exe -m venv _venv-msvc
-    _venv-msvc/Scripts/python.exe -m pip install "Cython>=3,<4" pytest
+    _venv-msvc/Scripts/python.exe -m pip install "Cython>=3,<4" pytest setuptools
+
+(setuptools is listed explicitly: Python 3.12+ venvs no longer preinstall
+it, and setup.py imports it at module level.)
 
 ## The symbol gate needs llvm-nm on PATH
 

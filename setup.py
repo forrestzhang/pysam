@@ -427,7 +427,13 @@ class cy_build_ext(build_ext):
                 # emitted beside it: cross-module binding can only happen
                 # through exports, making this the exact PE analogue of the
                 # POSIX gate reading .so dynamic symbols.
-                objfile = os.path.splitext(objfile)[0] + ".dll.a"
+                # BUILD-02 (03-03): the MSVC arm emits .lib (llvm-nm parses
+                # MSVC archives -- verified); MinGW keeps .dll.a.
+                implib_ext = (
+                    ".lib"
+                    if getattr(self.compiler, "compiler_type", None) == "msvc"
+                    else ".dll.a")
+                objfile = os.path.splitext(objfile)[0] + implib_ext
             for sym in run_nm_defined_symbols(objfile):
                 symbols.setdefault(sym, []).append(ext.name.lstrip('pysam.'))
 
@@ -558,38 +564,66 @@ class cy_build_ext(build_ext):
             # PE binaries have no ELF rpath; only ensure the flag list exists.
             if not ext.extra_link_args:
                 ext.extra_link_args = []
-            # Emit an import library beside each built module so the other
-            # extensions' -l flags resolve through library_dirs (GNU ld
-            # searches for lib<name>.dll.a there). Module names already
-            # carry the 'lib' prefix (libchtslib, libcsamtools, ...), so the
-            # stub name is the module + EXT_SUFFIX stem + .dll.a — exactly
-            # what '-l<name minus lib prefix>' expands to.
             mod = ext.name.rsplit('.', 1)[-1]
-            # D-17: derive the implib path from the module's own output
-            # directory so emission and the symbol-gate probe (which reads
-            # get_ext_fullpath + ".dll.a") always target the same file,
-            # inplace or not. The dirname is always on the -l search path:
-            # common_options puts abspath("pysam") in every extension's
-            # library_dirs, and build_extension appends build_lib/pysam
-            # when not inplace.
-            implib = os.path.join(
-                os.path.dirname(self.get_ext_fullpath(ext.name)),
-                os.path.splitext(mod + suffix)[0] + ".dll.a")
-            # distutils hands the linker a .def file naming only PyInit_*,
-            # which suppresses PE auto-export; later extensions resolve
-            # dispatch/htslib symbols through this module's import library,
-            # so export everything (the ELF default the POSIX build relies
-            # on).
-            ext.extra_link_args.append("-Wl,--export-all-symbols")
-            # D-14: never export the getopt family. Each extension's copy
-            # (vendored win32/getopt.c in libchtslib, or the static mingwex
-            # member pulled into the tool extensions) stays private, so
-            # siblings never bind across module boundaries. binutils' PE
-            # linker delimits --exclude-symbols entries with ':'.
-            ext.extra_link_args.append(
-                "-Wl,--exclude-symbols="
-                + ":".join(sorted(WIN32_GETOPT_EXEMPT_SYMBOLS)))
-            ext.extra_link_args.append("-Wl,--out-implib," + implib)
+            if getattr(self.compiler, "compiler_type", None) == "msvc":
+                # BUILD-02 (03-03) msvc arm: link.exe flags ONLY -- no GNU
+                # -Wl flag may reach this arm (link.exe warns LNK4044 and
+                # silently ignores them, hiding real misconfiguration).
+                # The export surface comes from HTS_BUILDING_LIBRARY
+                # dllexport (libchtslib-only compile define) plus the
+                # supplementary /DEF: below (union export); link.exe has
+                # no --export-all-symbols equivalent and needs neither.
+                # D-17 (msvc arm): emit the import library beside the
+                # built module via a LATE /IMPLIB: -- it overrides
+                # distutils' builtin /IMPLIB (verified: last flag wins).
+                # The symbol-gate probe reads exactly this path (.lib),
+                # and consumer extensions resolve through
+                # internal_htslib_libraries because the emitted stem
+                # matches the existing module naming.
+                implib = os.path.join(
+                    os.path.dirname(self.get_ext_fullpath(ext.name)),
+                    os.path.splitext(mod + suffix)[0] + ".lib")
+                ext.extra_link_args.append("/IMPLIB:" + implib)
+                if ext.name == "pysam.libchtslib":
+                    # Supplementary exports: the enumerated un-annotated
+                    # gaps only (win32/chtslib_exports.def); the annotated
+                    # surface is carried by htslib's HTSLIB_EXPORT
+                    # machinery. Consumer LNK2001 self-detects any drift.
+                    ext.extra_link_args.append(
+                        "/DEF:" + os.path.abspath(
+                            os.path.join("win32", "chtslib_exports.def")))
+            else:
+                # Emit an import library beside each built module so the other
+                # extensions' -l flags resolve through library_dirs (GNU ld
+                # searches for lib<name>.dll.a there). Module names already
+                # carry the 'lib' prefix (libchtslib, libcsamtools, ...), so the
+                # stub name is the module + EXT_SUFFIX stem + .dll.a — exactly
+                # what '-l<name minus lib prefix>' expands to.
+                # D-17: derive the implib path from the module's own output
+                # directory so emission and the symbol-gate probe (which reads
+                # get_ext_fullpath + ".dll.a") always target the same file,
+                # inplace or not. The dirname is always on the -l search path:
+                # common_options puts abspath("pysam") in every extension's
+                # library_dirs, and build_extension appends build_lib/pysam
+                # when not inplace.
+                implib = os.path.join(
+                    os.path.dirname(self.get_ext_fullpath(ext.name)),
+                    os.path.splitext(mod + suffix)[0] + ".dll.a")
+                # distutils hands the linker a .def file naming only PyInit_*,
+                # which suppresses PE auto-export; later extensions resolve
+                # dispatch/htslib symbols through this module's import library,
+                # so export everything (the ELF default the POSIX build relies
+                # on).
+                ext.extra_link_args.append("-Wl,--export-all-symbols")
+                # D-14: never export the getopt family. Each extension's copy
+                # (vendored win32/getopt.c in libchtslib, or the static mingwex
+                # member pulled into the tool extensions) stays private, so
+                # siblings never bind across module boundaries. binutils' PE
+                # linker delimits --exclude-symbols entries with ':'.
+                ext.extra_link_args.append(
+                    "-Wl,--exclude-symbols="
+                    + ":".join(sorted(WIN32_GETOPT_EXEMPT_SYMBOLS)))
+                ext.extra_link_args.append("-Wl,--out-implib," + implib)
         else:
             if not ext.extra_link_args:
                 ext.extra_link_args = []
@@ -779,7 +813,14 @@ if HTSLIB_MODE in ['shared', 'separate']:
         print(f"# pysam: htslib_config {key}={value}")
 
     external_htslib_libraries = ['z']
-    if "LIBS" in htslib_make_options:
+    if IS_MSVC_PYTHON:
+        # BUILD-02 (03-03): the MSVC closure. The vendored zlib/bzip2/
+        # liblzma/regex trees are compiled in as libchtslib sources (plan
+        # 03-02), so the autotools '-l' harvest has no counterpart here;
+        # the only system residue is ws2_32 (sockets; the UCRT64 build
+        # links it too).
+        external_htslib_libraries = ["ws2_32"]
+    elif "LIBS" in htslib_make_options:
         external_htslib_libraries.extend(
             [re.sub("^-l", "", x) for x in htslib_make_options["LIBS"].split(" ") if x.strip()])
 
@@ -825,6 +866,12 @@ elif HTSLIB_MODE == 'shared':
     htslib_include_dirs = ['htslib']
 else:
     raise ValueError(f"unknown HTSLIB value {HTSLIB_MODE!r}")
+
+if IS_MSVC_PYTHON and HTSLIB_MODE == 'shared':
+    # BUILD-02 (03-03): no make-built libhts.a exists on the MSVC path --
+    # every htslib TU is compiled by setuptools from libchtslib.sources
+    # (the MSVC_LIBHTS_OBJS mirror turned into .c paths below).
+    htslib_objects = []
 
 # build config.py
 with open(os.path.join("pysam", "config.py"), "w") as outf:
@@ -896,6 +943,78 @@ else:
         "-Wno-error=declaration-after-statement",
     ])
 
+#######################################################
+# Windows (MSVC) module graph (BUILD-02, plan 03-03)
+#
+# The two-level dispatch, arm 1 (module graph): keyed on the sysconfig
+# platform at module level. Arm 2 (compiler flags) lives inside
+# cy_build_ext, keyed on self.compiler.compiler_type. Everything in
+# this block is invisible to the mingw/POSIX graphs -- UCRT64
+# byte-identity is the zero-regression red line.
+msvc_include_extra = []
+msvc_chtslib_sources = []
+msvc_tool_private_sources = []
+if IS_MSVC_PYTHON:
+    # Include dirs: the shim dir plus the vendored trees' header paths,
+    # copied verbatim from vendor/README.md (the single include source --
+    # no MSYS2 header dir must ever appear on an MSVC compile line,
+    # T-03-05).
+    msvc_include_extra = [
+        "win32/msvc",
+        "vendor/zlib", "vendor/bzip2", "vendor/regex",
+        "vendor/xz/src/liblzma/api", "vendor/xz/src/liblzma/common",
+        "vendor/xz/src/liblzma/check", "vendor/xz/src/liblzma/lz",
+        "vendor/xz/src/liblzma/lzma", "vendor/xz/src/liblzma/delta",
+        "vendor/xz/src/liblzma/simple", "vendor/xz/src/liblzma/rangecoder",
+        "vendor/xz/src/common",
+    ]
+
+    # Vendored dependency sources, compiled into libchtslib by the same
+    # cl pass (sets per vendor/README.md: zlib 15 core TUs, bzip2 7
+    # library TUs, xz liblzma tree + the two src/common support TUs,
+    # musl regex 4 TUs -- regfree is defined inside regcomp.c).
+    msvc_vendor_sources = (
+        sorted(glob.glob(os.path.join("vendor", "zlib", "*.c"))) +
+        sorted(glob.glob(os.path.join("vendor", "bzip2", "*.c"))) +
+        sorted(glob.glob(os.path.join("vendor", "xz", "src", "liblzma",
+                                      "**", "*.c"), recursive=True)) +
+        [os.path.join("vendor", "xz", "src", "common", "tuklib_physmem.c"),
+         os.path.join("vendor", "xz", "src", "common", "tuklib_cpucores.c")] +
+        sorted(glob.glob(os.path.join("vendor", "regex", "*.c")))
+    )
+
+    # libchtslib's MSVC sources: the MSVC_LIBHTS_OBJS mirror as .c paths
+    # plus the vendored closure plus the Win32 pthread implementation
+    # (the shim layer's only compiled artifact).
+    msvc_chtslib_sources = (
+        [os.path.join("htslib", o[:-2] + ".c") for o in MSVC_LIBHTS_OBJS] +
+        msvc_vendor_sources +
+        [os.path.join("win32", "msvc", "pthread_win32.c")])
+
+    # D-16 isolation analogue: each tool extension (the samtools and
+    # bcftools mains live in libcsamtools/libcbcftools, and libcutils
+    # wraps both dispatch families) compiles its own private getopt --
+    # MinGW pulls the static libmingwex member per extension; MSVC has
+    # no system getopt at all, so the vendored win32/getopt.c is the
+    # copy. Never shared across modules, never exported.
+    msvc_tool_private_sources = [os.path.join("win32", "getopt.c")]
+
+    # Vendored-tree configuration macros (vendor/README.md recorded
+    # sets): xz's no-config route and the musl regex defines. Applied
+    # globally on the MSVC arm -- every other consumer ignores them.
+    define_macros.extend([
+        ("HAVE_STDINT_H", "1"), ("HAVE_INTTYPES_H", "1"),
+        ("HAVE_STDBOOL_H", "1"),
+        ("hidden", ""), ("RE_DUP_MAX", "255"), ("CHARCLASS_NAME_MAX", "14"),
+    ])
+
+    # /FI force-includes the central compat header into every TU (the
+    # mapping list must be global -- most call sites never include the
+    # POSIX header that would canonically declare those names).
+    extra_compile_args.append(
+        "/FI" + os.path.abspath(os.path.join("win32", "msvc",
+                                             "msvc_compat.h")))
+
 suffix = sysconfig.get_config_var('EXT_SUFFIX')
 
 internal_htslib_libraries = [
@@ -928,6 +1047,13 @@ def prebuild_libchtslib(ext, force):
 
     write_configvars_header("htslib/config_vars.h", ext, "HTS")
 
+    if IS_MSVC_PYTHON:
+        # BUILD-02 (03-03): no autotools anywhere on the MSVC path -- no
+        # make-built libhts.a. config_vars.h is still written (hts.c:58
+        # includes it); every htslib TU is compiled by setuptools from
+        # libchtslib.sources with cl.
+        return
+
     if force or not os.path.exists("htslib/libhts.a"):
         log.info("building 'libhts.a'")
         with changedir("htslib"):
@@ -953,21 +1079,21 @@ modules = [
     # symbol set on win32.
     dict(name="pysam.libchtslib",
          prebuild_func=prebuild_libchtslib,
-         sources=[source_pattern % "htslib", "pysam/htslib_util.c"] + dynamic_files + os_c_files,
+         sources=[source_pattern % "htslib", "pysam/htslib_util.c"] + dynamic_files + os_c_files + msvc_chtslib_sources,
          extra_objects=htslib_objects,
          libraries=external_htslib_libraries),
     dict(name="pysam.libcsamtools",
          prebuild_func=prebuild_libcsamtools,
          sources=[source_pattern % "samtools"] + glob.glob(os.path.join("samtools", "*.pysam.c")) +
-         [os.path.join("samtools", "lz4", "lz4.c")],
+         [os.path.join("samtools", "lz4", "lz4.c")] + msvc_tool_private_sources,
          extra_objects=separate_htslib_objects,
          libraries=external_htslib_libraries + internal_htslib_libraries),
     dict(name="pysam.libcbcftools",
-         sources=[source_pattern % "bcftools"] + glob.glob(os.path.join("bcftools", "*.pysam.c")),
+         sources=[source_pattern % "bcftools"] + glob.glob(os.path.join("bcftools", "*.pysam.c")) + msvc_tool_private_sources,
          extra_objects=separate_htslib_objects,
          libraries=external_htslib_libraries + internal_htslib_libraries),
     dict(name="pysam.libcutils",
-         sources=[source_pattern % "utils"],
+         sources=[source_pattern % "utils"] + msvc_tool_private_sources,
          extra_objects=separate_htslib_objects,
          libraries=external_htslib_libraries + internal_htslib_libraries + internal_samtools_libraries),
     dict(name="pysam.libcalignmentfile",
@@ -1015,11 +1141,22 @@ common_options = dict(
     # for out-of-tree compilation, use absolute paths
     library_dirs=[os.path.abspath(x) for x in ["pysam"] + htslib_library_dirs],
     include_dirs=[os.path.abspath(x) for x in ["pysam"] + htslib_include_dirs + \
-                  ["samtools", "samtools/lz4", "bcftools", "."] + include_os])
+                  ["samtools", "samtools/lz4", "bcftools", "."] + include_os + msvc_include_extra])
 
 # add common options (in python >3.5, could use n = {**a, **b}
 for module in modules:
     module.update(**common_options)
+
+if IS_MSVC_PYTHON:
+    # BUILD-02 (03-03): libchtslib-only compile define. Activates
+    # hts_defs.h's HTSLIB_EXPORT -> __declspec(dllexport) machinery on
+    # all annotated API (hts_expr.c:28 does the same in-file upstream);
+    # consumers link the emitted import library instead. Must be a NEW
+    # list -- define_macros is shared object identity across modules.
+    for module in modules:
+        if module["name"] == "pysam.libchtslib":
+            module["define_macros"] = list(module["define_macros"]) + [
+                ("HTS_BUILDING_LIBRARY", None)]
 
 classifiers = """
 Development Status :: 4 - Beta
