@@ -298,8 +298,12 @@ def write_configvars_header(filename, ext, prefix):
             # (D:\Github\pysam\vendor\xz\...) otherwise produce invalid
             # escape sequences -- "\x" + non-hex digit is a hard C2153
             # error under cl (03-04). POSIX paths carry no backslashes,
-            # so this write is byte-identical there.
-            outf.write(f'#define {prefix}_{var} "{value.replace("\\", "\\\\")}"\n')
+            # so this write is byte-identical there. The escaped value is
+            # computed outside the f-string: a backslash inside an
+            # f-string expression is a SyntaxError before Python 3.12
+            # (PEP 701), and fork CI still builds the 3.9-3.11 cells.
+            value = value.replace("\\", "\\\\")
+            outf.write(f'#define {prefix}_{var} "{value}"\n')
 
 
 @contextmanager
