@@ -2,17 +2,17 @@
 gsd_state_version: "1.0"
 current_phase: 03
 current_phase_name: MSVC 构建系统
-status: executing
-stopped_at: Completed 03-04-PLAN.md
-last_updated: "2026-10-12T15:36:11.380Z"
+status: verifying
+stopped_at: Completed 03-05-PLAN.md (phase 03 complete)
+last_updated: "2026-10-12T16:49:40.205Z"
 last_activity: 2026-10-12
 last_activity_desc: Phase 03 execution started
-state_head: 684b0912c263e46d8b074bb367d11dcab8ee296f
+state_head: 0e6adfd7b148bf6f712855927645204518f5b9e5
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 12
-  completed_plans: 11
+  completed_plans: 12
   percent: 50
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-12)
 
 Phase: 03 (MSVC 构建系统) — EXECUTING
 Plan: 5 of 5
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-10-12 — Phase 03 execution started
 
 Progress: [█████░░░░░] 50%
@@ -70,6 +70,7 @@ Progress: [█████░░░░░] 50%
 | Phase 03 P02 | 26 min | 3 tasks | 219 files |
 | Phase 03 P03 | 26 min | 3 tasks | 12 files |
 | Phase 03 P04 | 118 min | 3 tasks | 21 files |
+| Phase 03 P05 | 68 min | 3 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -106,6 +107,9 @@ Recent decisions affecting current work:
 - [Phase 03]: [Phase 03-04]: MSVC arm uses /GL- (distutils /GL+/LTCG ICEs the cl 14.50 backend on filter_decoder.c; upstream xz MSVC builds never use /GL) and /std:c11 /utf-8 via extra_compile_args — set_executables is a no-op under MSVCCompiler
 - [Phase 03]: [Phase 03-04]: win32/msvc/msvc_compat.h closes _CRT_DECLARE_NONSTDC_NAMES (stdlib min/max macros collided with the trees' own functions; the open gate's off_t is 32-bit) — every legacy POSIX name now maps to an always-declared underscore spelling; the fd trio is declared, not mapped (macros mangled hFILE_backend->read member calls)
 - [Phase 03]: [Phase 03-04]: xz consumes the full autotools-equivalent feature define set; the bare 3-define route left decoders[] empty (cl ICE) and the HAVE_SMALL/mt/tablegen TUs are excluded from the module graph; -Dhidden= dropped globally (tre.h compat edit 2)
+- [Phase 03]: 03-05: MSVC suite green via root-cause fixes, not skips -- fd double-close (dup at lend sites), WR-01 binary-capture regression (strict-first decode), GNU-getopt optind reinit, C11 assert portability; 1028/15 both toolchains
+- [Phase 03]: SC-3: cl.exe-first, clang-cl documented contingency only -- 1.24-tree error surface is 2 C99 sites + finite shim, both closed; premise of prior-art clang-cl-for-VLAs advice superseded
+- [Phase 03]: CI syntax floor = oldest supported Python (3.9): PEP 701 f-string backslash killed py3.9-3.11 cells though 3.13/3.14 accept it; ast.parse(feature_version=(3,9)) as pre-push gate
 
 ### Pending Todos
 
@@ -127,6 +131,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T15:36:11.325Z
-Stopped at: Completed 03-04-PLAN.md
+Last session: 2026-10-12T16:49:40.153Z
+Stopped at: Completed 03-05-PLAN.md (phase 03 complete)
 Resume file: None
