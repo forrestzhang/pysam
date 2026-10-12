@@ -450,12 +450,15 @@ def _pysam_dispatch(collection,
     def _collect(fn):
         out = []
         try:
-            with open(fn, "r") as inf:
-                out = inf.read()
-        except UnicodeDecodeError:
             with open(fn, "rb") as inf:
-                # read binary output
-                out = inf.read()
+                # Binary read + explicit UTF-8 decode with replacement:
+                # captured tool output must never pass through the
+                # locale-default text codec, which silently mojibakes
+                # non-ASCII output on non-UTF-8 locales (WR-01), and
+                # decoding with replacement never raises.  Positional
+                # args per the cdef convention: encoding=None selects
+                # TEXT_ENCODING (utf-8).
+                out = decode_bytes(inf.read(), None, 'replace')
         finally:
             os.remove(fn)
         return out
