@@ -3,30 +3,30 @@ phase: 03
 review: 03-REVIEW.md
 titles: json
 findings:
-  - id: WR-01
-    severity: warning
-    disposition: open
-    title: "VLA-to-heap port of `print_hist` never checks `malloc` failure"
-  - id: WR-02
-    severity: warning
-    disposition: open
-    title: "Drop-in headers' `__GNUC__` forwarder gate diverges from `msvc_compat.h`'s `_MSC_VER` gate — breaks the documented clang-cl fallback"
-  - id: WR-03
-    severity: warning
-    disposition: open
-    title: "`X_OK` mapped to `6` — contradicts both POSIX and its own comment"
-  - id: WR-04
-    severity: warning
-    disposition: open
-    title: "`_collect` UTF-8 rework changes dispatch return type on non-UTF-8-locale POSIX interpreters; in-code comment overclaims \"identical bytes either way\""
   - id: IN-01
     severity: info
     disposition: open
-    title: "Stray double semicolons in the `_MSC_VER` arms of `abuf.c`"
+    title: "`shim_selftest.c` probes four of the five drop-in headers — `dirent.h` is not exercised"
   - id: IN-02
     severity: info
     disposition: open
-    title: "`opendir`/`readdir` errno mapping is coarse"
+    title: "Stale `#endif /* __GNUC__ */` end comments after the WR-02 gate rename"
+  - id: WR-01
+    severity: warning
+    disposition: fixed
+    title: "VLA-to-heap port of `print_hist` never checks `malloc` failure"
+  - id: WR-02
+    severity: warning
+    disposition: fixed
+    title: "Drop-in headers' `__GNUC__` forwarder gate diverges from `msvc_compat.h`'s `_MSC_VER` gate"
+  - id: WR-03
+    severity: warning
+    disposition: fixed
+    title: "`X_OK` mapped to `6` — contradicts both POSIX and its own comment"
+  - id: WR-04
+    severity: warning
+    disposition: fixed
+    title: "`_collect` UTF-8 rework changes dispatch return type on non-UTF-8-locale POSIX interpreters; in-code comment overclaims"
   - id: IN-03
     severity: info
     disposition: open
@@ -55,27 +55,27 @@ findings:
     severity: info
     disposition: open
     title: "msvc-build.md states \"win-amd64 CPython 3.13+\" as the prerequisite"
-open: 13
+open: 9
 total: 13
-recorded: 2026-10-12T17:08:39.877Z
+recorded: 2026-10-12T17:33:35.468Z
 ---
 
 # Phase 03: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | open | - |
-| WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
-| WR-04 | warning | open | - |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
-| IN-03 | info | open | - |
-| IN-04 | info | open | - |
-| IN-05 | info | open | - |
-| IN-06 | info | open | - |
-| IN-07 | info | open | - |
-| IN-08 | info | open | - |
-| IN-09 | info | open | - |
+| WR-01 | warning | fixed | 03-REVIEW-FIX.md iter1 (not in the current review) |
+| WR-02 | warning | fixed | 03-REVIEW-FIX.md iter1 (not in the current review) |
+| WR-03 | warning | fixed | 03-REVIEW-FIX.md iter1 (not in the current review) |
+| WR-04 | warning | fixed | 03-REVIEW-FIX.md iter1 (not in the current review) |
+| IN-03 | info | open | - (not in the current review) |
+| IN-04 | info | open | - (not in the current review) |
+| IN-05 | info | open | - (not in the current review) |
+| IN-06 | info | open | - (not in the current review) |
+| IN-07 | info | open | - (not in the current review) |
+| IN-08 | info | open | - (not in the current review) |
+| IN-09 | info | open | - (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
