@@ -150,14 +150,16 @@ typedef long long off_t;
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
 
-/* access() mode flags (cram_io.c's ref-cache probe). X_OK has no
-   faithful Windows equivalent (no execute permission bit); _access
-   treats it as existence-and-not-write-protected -- the same
-   approximation every Windows port makes. Values are the POSIX
-   iostream convention. */
+/* access() mode flags (the cram_io.c ref-cache probe pattern). Values
+   are the POSIX constants, so bitwise combinations callers write keep
+   their POSIX arithmetic. X_OK has no faithful Windows equivalent (no
+   execute permission bit): _access tests only the write (2) and read
+   (4) bits, so mode 1 sets neither and an X_OK probe degrades to an
+   existence check -- a documented approximation. No bundled caller
+   uses X_OK today (the trees probe with R_OK: hts.c, cram_io.c). */
 #ifndef F_OK
 #define F_OK 0
-#define X_OK 6
+#define X_OK 1
 #define W_OK 2
 #define R_OK 4
 #endif
