@@ -79,7 +79,15 @@ static int bcftools_status = 0;
 int bcftools_dispatch(int argc, char *argv[])
 {
   /* Reset getopt()/getopt_long() processing. */
-#if defined __GLIBC__
+#if defined __GLIBC__ || defined _MSC_VER
+  /* _MSC_VER: the vendored win32/getopt.c IS GNU getopt (a private copy
+     compiled into each tool module), which implements the glibc
+     optind=0 reinitialize idiom.  optind=1 alone leaves getopt's
+     internal permutation state (nextchar/first_nonopt) stale across
+     dispatches, so a later dispatch can misparse its own options --
+     seen live as a view -H -o dispatch dropping its -o and writing
+     the header into the devnull capture (empty output, exit 0).
+     MinGW keeps optind=1: its getopt is mingwex's BSD-style copy. */
   optind = 0;
 #elif defined _OPTRESET || defined _OPTRESET_DECLARED
   optreset = optind = 1;
