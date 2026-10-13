@@ -21,13 +21,13 @@ Windows 用户能够 `pip install` 拿到 wheel 并正常使用 pysam 的全部�
 - ✓ MinGW-w64 (MSYS2) 下从源码完整构建 pysam（含 bundled htslib/samtools/bcftools）— Phase 1（UCRT64 单命令 bootstrap，13 扩展 + 13 导入库，BUILD-03 符号门带牙齿，D-16 getopt 隔离，ubuntu/macos CI 零回归）
 - ✓ Windows 可移植性加固 + 完整测试套件全绿 — Phase 2（libcport.pxd 单点平台映射清零 posix cimport；htslib 宽字符 open shim 使 CJK 路径可用；11 项字节保真回归测试防 text-mode 损坏；1027 passed / 15 skipped / 0 failed，TEST-02 对账零静默 skip；fork CI 19/19 全绿；上游 4 个已知失败中 1 个直接通过、3 个根因修复；PORT-01..04 + TEST-01/02）
 - ✓ MSVC 构建系统就位（双工具链并存）— Phase 3（setup.py 两级分派：平台选源码 compiler_type 选 flags；预烘焙 win32/config.h.msvc + 52-TU 显式源码清单，MSVC 路径零 autotools；win32/msvc/ 集中 shim 层 + pthread/dirent/regex 实现；四棵 vendored 依赖树带 SHA-256 溯源；首次全量 MSVC 构建 27 轮迭代收敛；**双工具链同树全绿：MSVC 与 UCRT64 各 1028/15/0**；D-17 implib 修复双臂验证；D-20 模板 lockstep 机械证明；fork CI 19/19 SHA 钉扎；BUILD-02）
+- ✓ Windows CI 与 wheel 分发上线 — Phase 4（ci.yaml 增量 windows job：MSVC 构建 + 实时符号门 + 全量 pytest，3.10–3.15 六 cell，25/25 全绿；win-wheels.yaml 流水线：cibuildwheel v4.3.1 → delvewheel `--ignore-existing` 修复 → 清洁机 smoke 门 → tag 门控发布；**线上 Release v0.24.1-win.2：6 个自包含 wheel（cp310–cp315），sha256 6/6 校验，无 vendor DLL、无 msvcrt.dll**；消费端从线上 URL 实证安装 + 全功能 smoke；CI 1032/16 与本地 1028/15 零未解释差异对账；CI-01/02/03）
 
 ### Active
 
 <!-- 当前范围。正在构建的方向。 -->
 
-- [ ] CI（GitHub Actions）增加 Windows runner，产出并分发 wheel（先 fork 渠道：GitHub Releases）
-- [ ] Python 版本覆盖面对齐上游当前支持面
+（v1 里程碑 12/12 需求全部交付 —— 见 Validated。后续方向见 Out of Scope 与 ROADMAP v2 候选。）
 
 ### Out of Scope
 
@@ -89,4 +89,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-12 after Phase 3*
+*Last updated: 2026-10-13 after Phase 4 (v1 milestone complete)*
