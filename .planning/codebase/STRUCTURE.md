@@ -58,7 +58,7 @@ pysam/                        # repository root
 ├── setup.py                  # build orchestration (806 lines — the core build script)
 ├── setup.cfg                 # pytest + flake8 config
 ├── pyproject.toml            # PEP 517 metadata; legacy setuptools backend; cibuildwheel config
-└── .github/workflows/        # ci.yaml (ubuntu+macos matrix), release.yaml
+└── .github/workflows/        # ci.yaml (ubuntu+macos matrix + windows MSVC job), release.yaml, win-wheels.yaml (Windows wheel pipeline)
 ```
 
 ## Directory Purposes
