@@ -3,17 +3,17 @@ gsd_state_version: "1.0"
 milestone: v4.3.1
 current_phase: 04
 current_phase_name: Windows CI 与 wheel 分发
-status: executing
-stopped_at: Completed 04-02-PLAN.md (win-wheels pipeline; Release v0.24.1-win.2 published)
-last_updated: "2026-10-13T02:02:26.316Z"
+status: verifying
+stopped_at: Completed 04-03-PLAN.md (phase 04 + milestone evidence complete; Release v0.24.1-win.2 consumer-proven)
+last_updated: "2026-10-13T04:05:39.381Z"
 last_activity: 2026-10-13
 last_activity_desc: Phase 04 execution started
-state_head: ddaa9b6871ece958463fc7f7eae538b5fccf0c08
+state_head: 1053e95f4c230dc62532b28195a57103b542790a
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 15
-  completed_plans: 14
+  completed_plans: 15
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-12)
 
 Phase: 04 (Windows CI 与 wheel 分发) — EXECUTING
 Plan: 3 of 3
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-10-13 — Phase 04 execution started
 
 Progress: [████████░░] 75%
@@ -74,6 +74,7 @@ Progress: [████████░░] 75%
 | Phase 03 P05 | 68 min | 3 tasks | 10 files |
 | Phase 04 P01 | 56 min | 2 tasks | 1 files |
 | Phase 04 P02 | 88 min | 4 tasks | 1 files |
+| Phase 04 P03 | 27 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -116,6 +117,9 @@ Recent decisions affecting current work:
 - [Phase 04]: [Phase 04-01]: Windows CI test step globs build/lib.* via cygpath -m $GITHUB_WORKSPACE - Git Bash on runners does not expand globs against backslash-form Windows paths (raw $GITHUB_WORKSPACE echoed literally; ModuleNotFoundError at pytest collection).
 - [Phase 04]: [Phase 04-01]: Windows CI pip prerequisites need --upgrade - python.org 3.10/3.11 hostpythons bundle setuptools 65.5.0 (pip no-ops without -U) and that generation detaches the process stdout stream during the MSVC build (logging errors; pytest dies at collection with 'underlying buffer has been detached'); 3.12+ bundle nothing and were green from the start. Locally reproduced with setuptools==65.5.0 vs 84.0.0.
 - [Phase 04]: [Phase 04-01]: windows (3.11) cell's extra skip is upstream-owned hygiene (skipif testIteratorOutOfScope on CPython 3.11 'invalid accesses crash'), not a runner anomaly; all six cells 1031-1032 passed / 16-17 skipped, delta vs local 1028/15 reconciles in 04-CI-VALIDATION.md.
+- [Phase 04]: [Phase 04-03]: All 04-03 Release URLs executed against v0.24.1-win.2, not the plan's literal win.1 - 04-02's publish run failed on win.1 before creating any Release and the Task 4 contingency re-tagged; 04-02-SUMMARY (the plan's read_first) is the authority; win.1 tag + failed run stay as audit trail.
+- [Phase 04]: [Phase 04-03]: CI-vs-local delta reconciled node-exactly: 1032/16 = 1028/15 + 6 mypy-collected typechecking tests - 2 tty-gated testUsage units (runner stdin never a tty) + 1 upstream 3.11 skipif; zero unexplained differences.
+- [Phase 04]: [Phase 04-03]: Wheel shadowing asserts must run in the script-form context (sys.path[0] = script dir) - python -c from the repo root puts cwd on sys.path and resolves to the source tree, a false test of its own guard.
 
 ### Pending Todos
 
@@ -137,6 +141,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-13T02:02:26.113Z
-Stopped at: Completed 04-02-PLAN.md (win-wheels pipeline; Release v0.24.1-win.2 published)
+Last session: 2026-10-13T04:05:05.744Z
+Stopped at: Completed 04-03-PLAN.md (phase 04 + milestone evidence complete; Release v0.24.1-win.2 consumer-proven)
 Resume file: None

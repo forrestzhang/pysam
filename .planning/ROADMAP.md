@@ -122,7 +122,7 @@ Plans:
   3. 发布门槛生效：清洁 Windows 机器安装 wheel 并 import + 打开 BAM 的冒烟测试通过后才允许发布
   4. wheel 经 fork 渠道发布到 GitHub Releases，Windows 用户 pip 安装后 htslib API 绑定与 samtools/bcftools 命令分派全部可用
 
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans executed
 
 Plans:
 **Wave 1**
@@ -135,7 +135,7 @@ Plans:
 
 **Wave 3** *(blocked on 04-02)*
 
-- [ ] 04-03-PLAN.md — 消费者路径实证（Release URL 干净 venv 安装 + smoke）+ 04-CI-VALIDATION.md 对账记录（矩阵/完整性/CI-03 对齐/建议采纳登记）+ INSTALL wheel 章节 + 阶段零回归收口（CI-02, CI-03）
+- [x] 04-03-PLAN.md — 消费者路径实证（Release URL 干净 venv 安装 + smoke）+ 04-CI-VALIDATION.md 对账记录（矩阵/完整性/CI-03 对齐/建议采纳登记）+ INSTALL wheel 章节 + 阶段零回归收口（CI-02, CI-03）
 
 ## Progress
 
@@ -154,7 +154,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 1. MinGW-w64 构建系统 | 3/3 | Complete    | 2026-10-01 |
 | 2. 可移植性加固与测试全绿 | 4/4 | Complete    | 2026-10-12 |
 | 3. MSVC 构建系统 | 5/5 | Complete    | 2026-10-13 |
-| 4. Windows CI 与 wheel 分发 | 2/3 | In Progress | - |
+| 4. Windows CI 与 wheel 分发 | 3/3 | In Progress | - |
 
 ---
 *Roadmap created: 2026-09-17*
