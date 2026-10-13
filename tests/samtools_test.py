@@ -11,7 +11,7 @@ import pysam
 import pysam.samtools
 import pysam.bcftools
 from TestUtils import checkBinaryEqual, slurp_file, \
-    check_samtools_view_equal, force_bytes, \
+    check_samtools_view_equal, check_api_readback_equal, force_bytes, \
     make_data_files, BAM_DATADIR
 
 
@@ -254,6 +254,15 @@ class TestSamtools:
                 error_msg = f"{command} failed: files {s} and {p} are not the same"
                 if binary_equal:
                     continue
+                elif sys.platform == 'win32' and s.endswith(".bam"):
+                    # 05 debt item 4 (02 WR-02): the win32 comparison side
+                    # reads both files back through pysam.AlignmentFile
+                    # instead of re-entering the same dispatch via
+                    # pysam.samtools.view -- the reader (htslib BAM reader)
+                    # is now a different code path from the writer
+                    # (samtools main behind _pysam_dispatch). The POSIX
+                    # ladder below is unchanged.
+                    assert check_api_readback_equal(s, p), error_msg
                 elif s.endswith(".bam"):
                     assert check_samtools_view_equal(s, p, without_header=True), error_msg
                 else:

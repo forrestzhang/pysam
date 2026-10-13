@@ -130,6 +130,41 @@ def check_samtools_view_equal(
     return True
 
 
+def check_api_readback_equal(filename1, filename2):
+    '''return true if the two BAM files read back through the pysam API
+    (the htslib BAM reader behind AlignmentFile) carry the same content.
+
+    05 debt item 4 (02 WR-02): the win32 samtools_test comparison oracle.
+    Where check_samtools_view_equal re-enters pysam.samtools.view (the
+    same dispatch code path that wrote the files), this comparator reads
+    both sides back through a different code path than the writer:
+    header text lines except @PG (the CL field embeds the per-side
+    output filename), then records pairwise in file order via
+    dict_of_read plus a tag comparison dropping MD and NM (parity with
+    check_samtools_view_equal's -x MD -x NM).
+    '''
+    with pysam.AlignmentFile(filename1, "rb") as inf1, \
+            pysam.AlignmentFile(filename2, "rb") as inf2:
+        header1 = [line for line in str(inf1.header).splitlines()
+                   if not line.startswith("@PG")]
+        header2 = [line for line in str(inf2.header).splitlines()
+                   if not line.startswith("@PG")]
+        if header1 != header2:
+            return False
+        for read1, read2 in zip_longest(inf1, inf2):
+            if read1 is None or read2 is None:
+                return False
+            if dict_of_read(read1) != dict_of_read(read2):
+                return False
+            tags1 = {k: v for k, v in (read1.tags or [])
+                     if k not in ("MD", "NM")}
+            tags2 = {k: v for k, v in (read2.tags or [])
+                     if k not in ("MD", "NM")}
+            if tags1 != tags2:
+                return False
+    return True
+
+
 def dict_of_read(read, exclude=frozenset()):
     '''return a read in dictionary form, omitting excluded fields.'''
     d = {}
