@@ -331,6 +331,32 @@ class TestWin32OracleReadback:
             os.path.join(str(tmp_path), "mutated.bam"), mapq=30)
         assert not check_api_readback_equal(original, mutated)
 
+    def test_tag_difference_rejected(self, tmp_path):
+        # Teeth (05 WR-03): a tag-only difference (no record-field
+        # change) must be caught -- the tag comparison is a distinct
+        # rejection axis from the dict_of_read record comparison.
+        from TestUtils import check_api_readback_equal
+        bam_a = _write_oracle_bam(
+            os.path.join(str(tmp_path), "a.bam"),
+            tags=[("RG", "grp1")])
+        bam_b = _write_oracle_bam(
+            os.path.join(str(tmp_path), "b.bam"),
+            tags=[("RG", "grp2")])
+        assert not check_api_readback_equal(bam_a, bam_b)
+
+    def test_header_difference_rejected(self, tmp_path):
+        # Teeth (05 WR-03): a header-only difference (identical
+        # records) must be caught -- the header comparison is a
+        # distinct rejection axis from the record/tag comparisons.
+        from TestUtils import check_api_readback_equal
+        header_b = {"HD": {"VN": "1.6", "SO": "coordinate"},
+                    "SQ": [{"SN": "chr1", "LN": 2000}]}
+        bam_a = _write_oracle_bam(
+            os.path.join(str(tmp_path), "a.bam"))
+        bam_b = _write_oracle_bam(
+            os.path.join(str(tmp_path), "b.bam"), header=header_b)
+        assert not check_api_readback_equal(bam_a, bam_b)
+
     def test_byte_copied_pair_accepted(self, tmp_path):
         # Honesty: a byte-copied pair is the trivial equal case.
         import shutil
