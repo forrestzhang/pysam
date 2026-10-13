@@ -1,7 +1,7 @@
 ---
 milestone: v1
 audited: 2026-10-13T05:00:00.000Z
-status: tech_debt
+status: passed
 scores:
   requirements: 12/12
   phases: 4/4
@@ -28,7 +28,7 @@ tech_debt:
 
 # v1 里程碑审计 — pysam Windows 适配
 
-**审计时间:** 2026-10-13 · **状态:** tech_debt（无 blocker，累积 advisory 打磨项）
+**审计时间:** 2026-10-13（Phase 5 债务清理后更新为 passed）· **状态:** passed（债务清理 phase 5 已关闭全部实质项）
 
 ## 结论
 
@@ -70,3 +70,11 @@ capability 关闭（workflow.nyquist_validation=false）—— 按工作流跳�
 ## Tech Debt 汇总
 
 29 项 info 级账本 open（跨 4 phase 的代码评审打磨项，无 critical/warning 残留 —— 全部 warning 已修复关闭）+ 3 条集成 v2 建议。**性质全部为打磨/加固，无功能缺口。**
+
+## Phase 5 债务清理收口（2026-10-13）
+
+Phase 5（05-01，验证 passed 5/5）关闭了本审计的全部实质 debt 项：集成警告 W2（52-TU 手工镜像 → **机器 lockstep 检查**，self-test 双牙齿：漂移 + 重复项）、03 IN-01/IN-02（哨兵补 dirent + 门控标签）、04 IN-01/02/03（clean_smoke 参数化 + 注释/插值卫生）、02 WR-02（win32 oracle 改 pysam API 读回，6 牙齿测试双工具链绿）、01 probe 残留。修复轮 3 warnings 亦全部关闭（重复项门、@PG CL 精确过滤、双轴牙齿）。
+
+**残余（记录在案，v2 候选）：** 05-REVIEW IN-01..05（info 级：HTSLIB_MODE=separate KeyError 面最实质）+ 集成建议 W1（wheel 逐版本全量套件门）与 A2（直接映像符号门）。
+
+**里程碑终态：** 5/5 phase 验证 passed · 16/16 plans · 12/12 v1 需求 · CI 全绿 @ 965760f1 · Release v0.24.1-win.2 线上。
