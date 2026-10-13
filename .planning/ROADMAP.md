@@ -160,7 +160,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 **Goal**: v1 里程碑审计记录的 advisory 技术债全部机械化关闭 —— MSVC_LIBHTS_OBJS 镜像有自动 lockstep 检查兜底（htslib 升级漂移即构建失败）、shim 哨兵覆盖全部五个 drop-in、clean_smoke 的 Python 版本单点定义、win32 samtools_test 对比侧恢复独立性 —— 零回归（双工具链 smoke + fork CI 全绿）。
 **Depends on**: Phase 4
-**Requirements**: （债务清理 — 无新增 v1 需求 ID；13/13 需求已满足，本阶段以 05-CONTEXT.md 债务清单 1-4 为必做规格）
+**Requirements**: None（债务清理 phase — 05-CONTEXT.md 债务清单 1-4 为必做规格）
 **Success Criteria** (what must be TRUE):
 
   1. mirror 与 `make print-config` 展开的 LIBHTS_OBJS 出现任何增/删差异时，UCRT64 构建路径与独立 devtools 检查均 fail（合成漂移自测试证明有牙）
