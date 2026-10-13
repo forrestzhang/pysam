@@ -136,8 +136,12 @@ jobs:
 
       - name: Publish
         # The tag name flows through env indirection, never inline in the run
-        # script (injection surface, T-04-05).
-        run: gh release create "$TAG" dist/*.whl --generate-notes --target "$GITHUB_SHA"
+        # script (injection surface, T-04-05). Re-run-safe: if the release
+        # already exists (transient failure after creation), clobber-upload
+        # the same-run wheels instead of failing hard (WR-02).
+        run: |
+          gh release create "$TAG" dist/*.whl --generate-notes --target "$GITHUB_SHA" \
+            || gh release upload "$TAG" dist/*.whl --clobber
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
