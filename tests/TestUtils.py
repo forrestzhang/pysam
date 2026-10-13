@@ -130,6 +130,17 @@ def check_samtools_view_equal(
     return True
 
 
+def _drop_pg_cl(line):
+    '''05 WR-02: within @PG lines drop only the CL field (it embeds the
+    per-side output filename); every other @PG field stays in the
+    comparison so a dropped, corrupt, or diverged @PG record (PN/ID/PP)
+    is caught instead of silently passing as "equal".'''
+    if not line.startswith("@PG"):
+        return line
+    return "\t".join(f for f in line.split("\t")
+                     if not f.startswith("CL:"))
+
+
 def check_api_readback_equal(filename1, filename2):
     '''return true if the two BAM files read back through the pysam API
     (the htslib BAM reader behind AlignmentFile) carry the same content.
@@ -138,17 +149,17 @@ def check_api_readback_equal(filename1, filename2):
     Where check_samtools_view_equal re-enters pysam.samtools.view (the
     same dispatch code path that wrote the files), this comparator reads
     both sides back through a different code path than the writer:
-    header text lines except @PG (the CL field embeds the per-side
-    output filename), then records pairwise in file order via
-    dict_of_read plus a tag comparison dropping MD and NM (parity with
-    check_samtools_view_equal's -x MD -x NM).
+    header text lines with the @PG CL field dropped (the CL field embeds
+    the per-side output filename), then records pairwise in file order
+    via dict_of_read plus a tag comparison dropping MD and NM (parity
+    with check_samtools_view_equal's -x MD -x NM).
     '''
     with pysam.AlignmentFile(filename1, "rb") as inf1, \
             pysam.AlignmentFile(filename2, "rb") as inf2:
-        header1 = [line for line in str(inf1.header).splitlines()
-                   if not line.startswith("@PG")]
-        header2 = [line for line in str(inf2.header).splitlines()
-                   if not line.startswith("@PG")]
+        header1 = [_drop_pg_cl(line)
+                   for line in str(inf1.header).splitlines()]
+        header2 = [_drop_pg_cl(line)
+                   for line in str(inf2.header).splitlines()]
         if header1 != header2:
             return False
         for read1, read2 in zip_longest(inf1, inf2):
