@@ -1,9 +1,9 @@
 /* win32/msvc/shim_selftest.c -- permanent shim-layer probe
    (BUILD-02, plan 03-03).
 
-   Includes the central compat header and all four drop-in headers and
+   Includes the central compat header and all five drop-in headers and
    touches one symbol or type of each (pthread_mutex_t family, gettimeofday,
-   strcasecmp, ssize_t, STDIN_FILENO). Doubles as the UCRT64 forwarder
+   strcasecmp, ssize_t, STDIN_FILENO, struct dirent). Doubles as the UCRT64 forwarder
    sentinel: this file must also compile under UCRT64 gcc
    ('gcc -fsyntax-only -I win32/msvc win32/msvc/shim_selftest.c'), where
    every header takes its __GNUC__ forwarder arm -- proving the shim
@@ -16,6 +16,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <dirent.h>
 
 static void once_ran(void) { /* pthread_once target */ }
 
@@ -27,6 +28,14 @@ int main(void) {
     struct timeval tv;
     ssize_t len = 0;
     int fd;
+
+    /* dirent sentinel (05 debt item 2 / 03 IN-01): compile-level proof
+       the header provides the type (address taken; no filesystem call).
+       Under the UCRT64 forwarder arm this resolves to MinGW's real
+       dirent.h, under MSVC to the drop-in's own definition. */
+    struct dirent ent_probe;
+    struct dirent *ent_ptr = &ent_probe;
+    (void)ent_ptr;  /* address taken: type proven, nothing executed */
 
     if (pthread_mutex_init(&mutex, NULL) != 0) return 1;
     if (pthread_mutex_lock(&mutex) != 0) return 2;

@@ -38,6 +38,6 @@ DIR *opendir(const char *path);
 struct dirent *readdir(DIR *dir);
 int closedir(DIR *dir);
 
-#endif /* __GNUC__ */
+#endif /* __GNUC__ && !_MSC_VER */
 
 #endif /* PYSAM_WIN32_MSVC_DIRENT_H */

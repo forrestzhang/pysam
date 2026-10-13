@@ -123,6 +123,6 @@ int pthread_setspecific(pthread_key_t key, const void *value);
    instead, so this is a documented no-op returning success. */
 int pthread_kill(pthread_t tid, int sig);
 
-#endif /* __GNUC__ */
+#endif /* __GNUC__ && !_MSC_VER */
 
 #endif /* PYSAM_WIN32_MSVC_PTHREAD_H */
