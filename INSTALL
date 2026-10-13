@@ -88,6 +88,26 @@ To install from repository, type::
 
 For compilation options, see the section on PyPI installation above.
 
+Windows (prebuilt wheel)
+========================
+
+Prebuilt 64-bit wheels (``win_amd64``) for Windows are published on the
+fork's GitHub Releases page::
+
+    https://github.com/forrestzhang/pysam/releases
+
+To install, run ``pip install`` with the full Release-URL of the wheel
+matching your CPython version (3.10--3.15), for example for CPython
+3.13::
+
+    python -m pip install https://github.com/forrestzhang/pysam/releases/download/v0.24.1-win.2/pysam-0.24.1-cp313-cp313-win_amd64.whl
+
+The wheels are self-contained: all bundled C libraries (htslib,
+samtools, bcftools) are statically linked in, and the Visual C++ runtime
+ships inside CPython itself. A standard 64-bit python.org CPython 3.10
+to 3.15 is the only requirement -- no compiler, MSYS2, or any other
+toolchain installation is needed. 32-bit Windows is not supported.
+
 Windows (MSYS2 UCRT64)
 ======================
 
@@ -115,8 +135,8 @@ The canonical one-command build, once ``_venv`` is activated, is::
     pip install -e . --no-build-isolation
 
 Building with GCC against a python.org CPython installation is
-explicitly unsupported in v1; end-user Python support on Windows will
-be delivered by the upcoming MSVC build path.
+explicitly unsupported in v1; end-user Python support on Windows is
+delivered by the MSVC prebuilt-wheel path (see the section above).
 
 ``HTSLIB_MODE`` must be unset or set to ``shared`` for the Windows
 build; the bootstrap script enforces this. Remote I/O (libcurl, S3 and
