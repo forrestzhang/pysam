@@ -148,6 +148,38 @@ def run_make_print_config():
     return make_print_config
 
 
+def check_msvc_libhts_objs_lockstep(make_libhts_objs_str):
+    """05 debt item 1 (v1 audit IN-W2): enforce the MSVC_LIBHTS_OBJS
+    mirror (BUILD-02, 03-03) against htslib/Makefile's real LIBHTS_OBJS
+    expansion. Any add/remove divergence raises LinkError -- the same
+    gate exception the BUILD-03 symbol gate raises -- so an htslib
+    upgrade that changes the object set can never silently strand the
+    hand-maintained MSVC module graph. The mirror tracks the
+    wheel-parity (--disable-libcurl) object set only;
+    devtools/check_libhts_objs_lockstep.py extracts this comparator
+    verbatim via ast and reports the same verdict standalone (single
+    source of truth -- the script never re-implements the rule).
+    """
+    make_objs = set(make_libhts_objs_str.split())
+    mirror_objs = set(MSVC_LIBHTS_OBJS)
+    if make_objs == mirror_objs:
+        return
+    add_to_mirror = sorted(make_objs - mirror_objs)
+    drop_from_mirror = sorted(mirror_objs - make_objs)
+    raise LinkError(
+        "MSVC_LIBHTS_OBJS mirror diverged from the htslib/Makefile "
+        "LIBHTS_OBJS expansion (Makefile: %d TUs, mirror: %d TUs)\n"
+        "  add to mirror:      %s\n"
+        "  drop from mirror:   %s\n"
+        "The mirror tracks the wheel-parity object set only. Recreate the "
+        "parity configuration (HTSLIB_CONFIGURE_OPTIONS=--disable-libcurl, "
+        "MAKE=mingw32-make -- the devtools/msys2-bootstrap.sh contract) and "
+        "update MSVC_LIBHTS_OBJS in setup.py to match that expansion."
+        % (len(make_objs), len(mirror_objs),
+           " ".join(add_to_mirror) or "(none)",
+           " ".join(drop_from_mirror) or "(none)"))
+
+
 # D-14: MinGW's getopt family lives in the STATIC libmingwex.a, so every
 # extension that references getopt_long or the opt* variables links its own
 # private copy. The D-10 premise ("MinGW has no getopt_long, so share the
@@ -823,6 +855,17 @@ if HTSLIB_MODE in ['shared', 'separate']:
 
         with changedir("htslib"):
             htslib_make_options = run_make_print_config()
+
+        # 05 debt item 1 (v1 audit IN-W2): enforce the MSVC_LIBHTS_OBJS
+        # mirror here. The MSVC arm itself must never invoke autotools
+        # (BUILD-02 / 03-03 decision), so the mirror is enforced at the
+        # one point where the Makefile truth is simultaneously available
+        # -- every UCRT64 dev build. Enforcement is unconditional per the
+        # debt spec: an intentionally libcurl-enabled local configure
+        # fails loudly with the parity hint rather than silently passing.
+        if sys.platform == 'win32':
+            check_msvc_libhts_objs_lockstep(
+                htslib_make_options["LIBHTS_OBJS"])
 
     HTSLIB_SOURCE = "builtin"
     print(f"# pysam: htslib configure options: {htslib_configure_options}")

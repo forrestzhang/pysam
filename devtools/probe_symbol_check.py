@@ -29,6 +29,7 @@ import glob
 import os
 import subprocess
 import sys
+import sysconfig
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SETUP_PY = os.path.join(REPO_ROOT, "setup.py")
@@ -104,7 +105,12 @@ def main():
         return 1
 
     # Strip note (A2 record): the built .pyd carry no COFF symbol table.
-    modules = sorted(glob.glob(os.path.join("pysam", "libc*.pyd")))
+    # 05 debt item 5a: anchor at REPO_ROOT so the probe is cwd-independent,
+    # and scope to the running interpreter's EXT_SUFFIX so the two venvs'
+    # inplace artifacts (cp314-mingw .dll.a / cp313-win_amd64 .lib) cannot
+    # cross-contaminate -- this probe judges the UCRT64 build's .dll.a set.
+    modules = sorted(glob.glob(os.path.join(
+        REPO_ROOT, "pysam", "libc*" + sysconfig.get_config_var("EXT_SUFFIX"))))
     if len(modules) < EXPECTED_MODULES:
         print("FAIL: expected >= %d built modules, found %d"
               % (EXPECTED_MODULES, len(modules)))
