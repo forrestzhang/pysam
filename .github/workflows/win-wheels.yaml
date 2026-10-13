@@ -8,6 +8,12 @@ on:
       - v[0-9]+.*
       - win-test*
   workflow_dispatch:
+    inputs:
+      smoke_python:
+        description: "Python version the clean_smoke job installs (choice-bounded to the six built versions; no free-form value can reach the shell)"
+        type: choice
+        options: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.15']
+        default: '3.13'
 
 permissions: {}
 
@@ -38,7 +44,12 @@ jobs:
         # The symbol gate runs inside cibuildwheel's isolated build; build
         # subprocesses inherit the runner env, so a GITHUB_PATH append is all
         # that is needed (no CIBW_ENVIRONMENT pass-through required).
-        run:  echo "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin" >> "$GITHUB_PATH"
+        run:  echo "${MSYS2_LOCATION}\ucrt64\bin" >> "$GITHUB_PATH"
+        env:
+          # env-indirect (04 IN-02): the step output reaches the run script
+          # through the environment, restoring the file-wide property of
+          # zero ${{ }} interpolation inside run: blocks (T-04-05).
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v4.3.1
@@ -53,9 +64,10 @@ jobs:
           # --ignore-existing is load-bearing: the default repair crashes on
           # pysam's cross-module .pyd imports (FileNotFoundError libchtslib...pyd).
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --ignore-existing -w {dest_dir} -v {wheel}"
-          # test-command has NO platform-suffix variant, so the override is
-          # whole-order in this Windows-only workflow.
-          CIBW_TEST_COMMAND: "python {project}/devtools/smoke_test.py"
+          # Platform-suffixed test-command key (cibuildwheel has the
+          # variant; 04 IN-01) -- semantics identical in this Windows-only
+          # workflow.
+          CIBW_TEST_COMMAND_WINDOWS: "python {project}/devtools/smoke_test.py"
           CIBW_ENVIRONMENT: ""  # explicitly empty so the POSIX section cannot leak
           CIBW_BUILD_VERBOSITY: "1"
 
@@ -76,6 +88,12 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      # One definition of the smoke Python (04 IN-03): the dispatch input,
+      # with the same default literal as fallback because tag-push runs
+      # carry no inputs context. The cp tag derived from this is the only
+      # wheel-glob vocabulary below -- no cp-tag literal exists in this job.
+      SMOKE_PY: ${{ inputs.smoke_python || '3.13' }}
 
     steps:
       - name: Checkout pysam
@@ -85,10 +103,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Python 3.13
+      - name: Set up Python ${{ env.SMOKE_PY }}
         uses: actions/setup-python@v7
         with:
-          python-version: '3.13'
+          python-version: ${{ env.SMOKE_PY }}
 
       - name: Get artifacts
         # Nameless merge-multiple download: takes this run's only artifact and
@@ -102,11 +120,18 @@ jobs:
       - name: Create clean-room venv
         run: python -m venv "$RUNNER_TEMP/cleanroom"
 
+      - name: Derive wheel cp tag from SMOKE_PY
+        # bash parameter expansion strips the dot (3.13 -> 313); the derived
+        # SMOKE_CP is appended to GITHUB_ENV so the install glob below reads
+        # one derived value (env-indirect; no template expressions in run
+        # lines, T-05-02).
+        run: echo "SMOKE_CP=cp${SMOKE_PY/./}" >> "$GITHUB_ENV"
+
       - name: Install wheel into the clean room
         # Filtered glob: pip hard-rejects "incompatible explicit" multi-file
         # installs once the matrix holds six version-tagged wheels; install
         # only the wheel matching this job's interpreter.
-        run: '"$RUNNER_TEMP/cleanroom/Scripts/python.exe" -m pip install dist/*-cp313-cp313-win_amd64.whl'
+        run: '"$RUNNER_TEMP/cleanroom/Scripts/python.exe" -m pip install dist/*-${SMOKE_CP}-${SMOKE_CP}-win_amd64.whl'
 
       - name: Run clean-machine smoke gate
         # Script-form invocation: sys.path[0] becomes devtools/, so import
