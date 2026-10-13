@@ -3,17 +3,17 @@ gsd_state_version: "1.0"
 milestone: v4.3.1
 current_phase: 05
 current_phase_name: 技术债清理
-status: completed
-stopped_at: Phase 04 complete — all phases complete
-last_updated: "2026-10-13T08:02:10.428Z"
+status: verifying
+stopped_at: Completed 05-01-PLAN.md
+last_updated: "2026-10-13T09:13:01.587Z"
 last_activity: 2026-10-13
-last_activity_desc: Phase 04 complete
-state_head: e36dbd426e857afac8fce59f561856c47acd2d60
+last_activity_desc: Phase 05 execution started
+state_head: 0e57840c164f169b6688421ceffdc843b5dbde7a
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 16
-  completed_plans: 15
+  completed_plans: 16
 ---
 
 # Project State
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-12)
 
 **Core value:** Windows 用户能够 `pip install` 拿到 wheel 并正常使用 pysam 的全部功能（htslib API 绑定 + samtools/bcftools 命令封装），完整测试套件在 Windows 上通过。
-**Current focus:** v1 里程碑完成（全部 4 phase 验证通过）
+**Current focus:** Phase 05 — 技术债清理
 
 ## Current Position
 
-Phase: 05 (技术债清理) — READY TO EXECUTE
-Plan: Not started
-Status: All phases complete
-Last activity: 2026-10-13 — Phase 04 complete
+Phase: 05 (技术债清理) — EXECUTING
+Plan: 1 of 1
+Status: Phase complete — ready for verification
+Last activity: 2026-10-13 — Phase 05 execution started
 
 Progress: [██████████] 100%
 
@@ -76,6 +76,7 @@ Progress: [██████████] 100%
 | Phase 04 P01 | 56 min | 2 tasks | 1 files |
 | Phase 04 P02 | 88 min | 4 tasks | 1 files |
 | Phase 04 P03 | 27 min | 2 tasks | 2 files |
+| Phase 05 P01 | 62 min | 4 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -121,6 +122,9 @@ Recent decisions affecting current work:
 - [Phase 04]: [Phase 04-03]: All 04-03 Release URLs executed against v0.24.1-win.2, not the plan's literal win.1 - 04-02's publish run failed on win.1 before creating any Release and the Task 4 contingency re-tagged; 04-02-SUMMARY (the plan's read_first) is the authority; win.1 tag + failed run stay as audit trail.
 - [Phase 04]: [Phase 04-03]: CI-vs-local delta reconciled node-exactly: 1032/16 = 1028/15 + 6 mypy-collected typechecking tests - 2 tty-gated testUsage units (runner stdin never a tty) + 1 upstream 3.11 skipif; zero unexplained differences.
 - [Phase 04]: [Phase 04-03]: Wheel shadowing asserts must run in the script-form context (sys.path[0] = script dir) - python -c from the repo root puts cwd on sys.path and resolves to the source tree, a false test of its own guard.
+- [Phase 05]: [Phase 05]: 05-01: MSVC_LIBHTS_OBJS lockstep is enforced at the run_make_print_config site (win32-guarded, LinkError with sorted add/drop diff + parity hint) — the MSVC arm never invokes autotools (BUILD-02), so the Makefile truth gates the mirror on every UCRT64 build; devtools/check_libhts_objs_lockstep.py ast-extracts the same comparator (single source of truth) with synthetic-drift self-test teeth.
+- [Phase 05]: [Phase 05]: 05-01: clean_smoke reads one definition end-to-end: choice-bounded smoke_python dispatch input -> job env SMOKE_PY (default literal repeated once as tag-push fallback) -> bash-derived SMOKE_CP glob; no free-form value can reach the shell; zero template expressions inside run: blocks file-wide.
+- [Phase 05]: [Phase 05]: 05-01: win32 samtools_test oracle strengthened to pysam API read-back (check_api_readback_equal: header minus @PG, records via dict_of_read + tags minus MD/NM) — the reader (htslib BAM reader) is a different code path from the dispatch writer; POSIX ladder textually untouched (diff-gate 0 removed lines).
 
 ### Pending Todos
 
@@ -142,6 +146,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-13T04:05:05.744Z
-Stopped at: v1 milestone complete — all 4 phases verified
+Last session: 2026-10-13T09:12:22.924Z
+Stopped at: Completed 05-01-PLAN.md
 Resume file: None

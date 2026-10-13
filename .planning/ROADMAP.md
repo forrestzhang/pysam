@@ -169,11 +169,11 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
   4. win32 BAM 对比侧改用 pysam API 读回比对（不再同码重入 dispatch），POSIX 分支行级不动；比较器有合成变异测试证明有牙
   5. 零回归：双工具链 smoke + 触及的测试文件双工具链通过 + fork CI 全绿
 
-**Plans:** 1 plan
+**Plans:** 1/1 plans executed
 
 Plans:
 
-- [ ] 05-01-PLAN.md — 债务 1-5 全清理：lockstep tracer（comparator + 接线 + 自测试）→ shim 哨兵 → clean_smoke 参数化（win-test.3 实证）→ win32 oracle 强化 + 零回归收口
+- [x] 05-01-PLAN.md — 债务 1-5 全清理：lockstep tracer（comparator + 接线 + 自测试）→ shim 哨兵 → clean_smoke 参数化（win-test.3 实证）→ win32 oracle 强化 + 零回归收口
 
 ---
 *Roadmap created: 2026-09-17*
