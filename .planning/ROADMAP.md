@@ -16,7 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: MinGW-w64 构建系统** - MSYS2 UCRT64 下从源码完整构建 pysam（开发验证产物） (completed 2026-10-01)
 - [x] **Phase 2: 可移植性加固与测试全绿** - POSIX 依赖清除 + 完整测试套件在 Windows 通过（对等证据） (completed 2026-10-12)
 - [x] **Phase 3: MSVC 构建系统** - 预烘焙 config.h.msvc + 显式源码清单的官方级工具链 (completed 2026-10-13)
-- [ ] **Phase 4: Windows CI 与 wheel 分发** - CI 持续产出并分发自包含 win_amd64 wheel（fork 渠道）
+- [x] **Phase 4: Windows CI 与 wheel 分发** - CI 持续产出并分发自包含 win_amd64 wheel（fork 渠道） (completed 2026-10-13)
 
 ## Phase Details
 
@@ -122,7 +122,7 @@ Plans:
   3. 发布门槛生效：清洁 Windows 机器安装 wheel 并 import + 打开 BAM 的冒烟测试通过后才允许发布
   4. wheel 经 fork 渠道发布到 GitHub Releases，Windows 用户 pip 安装后 htslib API 绑定与 samtools/bcftools 命令分派全部可用
 
-**Plans:** 3/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 **Wave 1**
@@ -154,7 +154,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 1. MinGW-w64 构建系统 | 3/3 | Complete    | 2026-10-01 |
 | 2. 可移植性加固与测试全绿 | 4/4 | Complete    | 2026-10-12 |
 | 3. MSVC 构建系统 | 5/5 | Complete    | 2026-10-13 |
-| 4. Windows CI 与 wheel 分发 | 3/3 | In Progress | - |
+| 4. Windows CI 与 wheel 分发 | 3/3 | Complete    | 2026-10-13 |
 
 ---
 *Roadmap created: 2026-09-17*
