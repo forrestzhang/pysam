@@ -169,7 +169,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
   4. win32 BAM 对比侧改用 pysam API 读回比对（不再同码重入 dispatch），POSIX 分支行级不动；比较器有合成变异测试证明有牙
   5. 零回归：双工具链 smoke + 触及的测试文件双工具链通过 + fork CI 全绿
 
-**Plans:** 1/1 plans executed
+**Plans:** 1/1 plans complete
 
 Plans:
 
