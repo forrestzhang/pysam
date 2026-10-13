@@ -5,11 +5,11 @@ titles: json
 findings:
   - id: IN-01
     severity: info
-    disposition: open
+    disposition: fixed
     title: "`shim_selftest.c` probes four of the five drop-in headers — `dirent.h` is not exercised"
   - id: IN-02
     severity: info
-    disposition: open
+    disposition: fixed
     title: "Stale `#endif /* __GNUC__ */` end comments after the WR-02 gate rename"
   - id: WR-01
     severity: warning
@@ -55,7 +55,7 @@ findings:
     severity: info
     disposition: open
     title: "msvc-build.md states \"win-amd64 CPython 3.13+\" as the prerequisite"
-open: 9
+open: 7
 total: 13
 recorded: 2026-10-12T17:33:35.468Z
 ---
@@ -64,8 +64,8 @@ recorded: 2026-10-12T17:33:35.468Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| IN-01 | info | open | - |
-| IN-02 | info | open | - |
+| IN-01 | info | fixed | phase-05 commit 13f50b6b (dirent sentinel in shim_selftest.c; verified at 03 stale-refresh 2026-10-13) |
+| IN-02 | info | fixed | phase-05 commit 13f50b6b (end tags renamed to `__GNUC__ && !_MSC_VER`; verified 0 stale patterns at 03 stale-refresh 2026-10-13) |
 | WR-01 | warning | fixed | 03-REVIEW-FIX.md iter1 (not in the current review) |
 | WR-02 | warning | fixed | 03-REVIEW-FIX.md iter1 (not in the current review) |
 | WR-03 | warning | fixed | 03-REVIEW-FIX.md iter1 (not in the current review) |
