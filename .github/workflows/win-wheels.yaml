@@ -1,0 +1,143 @@
+name: Windows wheels
+
+# Publish pipeline: tag pushes + manual dispatch only. NEVER branch pushes or
+# pull requests, so the publish path cannot be fired from a PR (T-04-07).
+on:
+  push:
+    tags:
+      - v[0-9]+.*
+      - win-test*
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  build_wheels:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash  # runner default is pwsh; the step lines are bash syntax
+    timeout-minutes: 240  # six serial cibuildwheel builds once the matrix widens
+
+    steps:
+      - name: Checkout pysam
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Provision llvm-nm for the BUILD-03 symbol gate
+        uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: UCRT64
+          release: false  # reuse the MSYS2 bundled with the runner image
+          update: false
+          install: mingw-w64-ucrt-x86_64-llvm-tools
+
+      - name: Put llvm-nm on PATH
+        # The symbol gate runs inside cibuildwheel's isolated build; build
+        # subprocesses inherit the runner env, so a GITHUB_PATH append is all
+        # that is needed (no CIBW_ENVIRONMENT pass-through required).
+        run:  echo "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin" >> "$GITHUB_PATH"
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v4.3.1
+        env:
+          CIBW_BUILD: "cp313-*"  # tracer cell; widened to cp310-cp315 after the dry run
+          CIBW_ARCHS: AMD64
+          # Three Windows overrides: the POSIX hooks in pyproject.toml
+          # [tool.cibuildwheel] would run under cmd.exe and die in 0.02s
+          # (install-prerequisites.sh) - the MSVC path is self-contained.
+          CIBW_BEFORE_ALL_WINDOWS: "echo no before-all on Windows (MSVC path self-contained)"
+          CIBW_BEFORE_BUILD_WINDOWS: "echo skipping make distclean (MSVC path has no autotools artifacts)"
+          # --ignore-existing is load-bearing: the default repair crashes on
+          # pysam's cross-module .pyd imports (FileNotFoundError libchtslib...pyd).
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --ignore-existing -w {dest_dir} -v {wheel}"
+          # test-command has NO platform-suffix variant, so the override is
+          # whole-order in this Windows-only workflow.
+          CIBW_TEST_COMMAND: "python {project}/devtools/smoke_test.py"
+          CIBW_ENVIRONMENT: ""  # explicitly empty so the POSIX section cannot leak
+          CIBW_BUILD_VERBOSITY: "1"
+
+      - name: Check wheelhouse
+        run:  python devtools/artifactname.py wheelhouse/*.whl >> "$GITHUB_ENV"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.artifactname }}
+          path: wheelhouse/*.whl
+
+  clean_smoke:
+    # SC-3 publish gate: a separate consumer job sharing no state with the
+    # build job - fresh venv, wheel-only install, script-form smoke.
+    needs: build_wheels
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout pysam
+        # smoke_test.py resolves the repo root from its own location and reads
+        # tests/pysam_data - the checkout is required.
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Get artifacts
+        # Nameless merge-multiple download: takes this run's only artifact and
+        # avoids coupling consumers to the version list artifactname embeds.
+        # Same-run-artifact-only is the provenance rule (T-04-06).
+        uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Create clean-room venv
+        run: python -m venv "$RUNNER_TEMP/cleanroom"
+
+      - name: Install wheel into the clean room
+        # Filtered glob: pip hard-rejects "incompatible explicit" multi-file
+        # installs once the matrix holds six version-tagged wheels; install
+        # only the wheel matching this job's interpreter.
+        run: '"$RUNNER_TEMP/cleanroom/Scripts/python.exe" -m pip install dist/*-cp313-cp313-win_amd64.whl'
+
+      - name: Run clean-machine smoke gate
+        # Script-form invocation: sys.path[0] becomes devtools/, so import
+        # resolves to the installed wheel. Module-form (python -m) invocation
+        # would put the repo root on sys.path and shadow the wheel with the
+        # source tree - a false gate.
+        run: '"$RUNNER_TEMP/cleanroom/Scripts/python.exe" devtools/smoke_test.py'
+
+  release:
+    # SC-4: publish only after the clean-machine gate passed in the same run.
+    # The if-guard keeps win-test* dry runs and dispatch runs from publishing.
+    needs: clean_smoke
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write  # the only elevation in this file
+
+    steps:
+      - name: Get artifacts
+        # Same-run artifacts only (provenance gate); no URL or previous-run
+        # downloads.
+        uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Publish
+        # The tag name flows through env indirection, never inline in the run
+        # script (injection surface, T-04-05).
+        run: gh release create "$TAG" dist/*.whl --generate-notes --target "$GITHUB_SHA"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
