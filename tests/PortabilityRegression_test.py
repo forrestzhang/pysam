@@ -286,3 +286,85 @@ class TestDispatchOutputEncoding:
         assert isinstance(header, str)
         assert u"@CO" in header
         assert CJK_CO_COMMENT in header
+
+
+ORACLE_HEADER = {
+    "HD": {"VN": "1.6", "SO": "coordinate"},
+    "SQ": [{"SN": "chr1", "LN": 1000}],
+}
+
+
+def _write_oracle_bam(path, header=ORACLE_HEADER, mapq=60, tags=None,
+                      n=2):
+    '''Write a synthetic BAM for the read-back oracle tests; returns path.'''
+    with pysam.AlignmentFile(path, "wb", header=header) as outf:
+        for i in range(n):
+            a = pysam.AlignedSegment(outf.header)
+            a.query_name = "read_%d" % i
+            a.query_sequence = "ACGTACGT"
+            a.query_qualities = pysam.qualitystring_to_array("IIIIIIII")
+            a.reference_id = 0
+            a.reference_start = 100 + i
+            a.mapping_quality = mapq
+            a.cigarstring = "8M"
+            if tags:
+                for tag, value in tags:
+                    a.set_tag(tag, value)
+            outf.write(a)
+    return path
+
+
+class TestWin32OracleReadback:
+    '''05 debt item 4 (02 WR-02): TestUtils.check_api_readback_equal is
+    the win32 samtools_test comparison oracle. It must have teeth (a
+    mutated record is rejected) and no false positives (byte-equal,
+    MD/NM-only, and @PG-only header differences are legitimate pairs --
+    the comparator strips MD/NM and @PG exactly like the
+    check_samtools_view_equal oracle it strengthens).'''
+
+    def test_mutated_record_rejected(self, tmp_path):
+        # Teeth: same records, one field mutated in the copy.
+        from TestUtils import check_api_readback_equal
+        original = _write_oracle_bam(
+            os.path.join(str(tmp_path), "original.bam"), mapq=60)
+        mutated = _write_oracle_bam(
+            os.path.join(str(tmp_path), "mutated.bam"), mapq=30)
+        assert not check_api_readback_equal(original, mutated)
+
+    def test_byte_copied_pair_accepted(self, tmp_path):
+        # Honesty: a byte-copied pair is the trivial equal case.
+        import shutil
+        from TestUtils import check_api_readback_equal
+        original = _write_oracle_bam(
+            os.path.join(str(tmp_path), "original.bam"))
+        copy = os.path.join(str(tmp_path), "copy.bam")
+        shutil.copyfile(original, copy)
+        assert check_api_readback_equal(original, copy)
+
+    def test_md_nm_tag_difference_accepted(self, tmp_path):
+        # Tag parity: MD and NM are stripped on both sides (mirrors
+        # check_samtools_view_equal's -x MD -x NM).
+        from TestUtils import check_api_readback_equal
+        bam_a = _write_oracle_bam(
+            os.path.join(str(tmp_path), "a.bam"),
+            tags=[("MD", "8"), ("NM", 0), ("RG", "grp")])
+        bam_b = _write_oracle_bam(
+            os.path.join(str(tmp_path), "b.bam"),
+            tags=[("MD", "4M2M2M"), ("NM", 2), ("RG", "grp")])
+        assert check_api_readback_equal(bam_a, bam_b)
+
+    def test_pg_header_difference_accepted(self, tmp_path):
+        # Header tolerance: @PG CL lines embed the per-side output
+        # filename; every other header line and all records match.
+        from TestUtils import check_api_readback_equal
+        header_a = dict(ORACLE_HEADER, PG=[
+            {"ID": "samtools", "PN": "samtools",
+             "CL": "samtools view -bo out_a.bam in.sam"}])
+        header_b = dict(ORACLE_HEADER, PG=[
+            {"ID": "samtools", "PN": "samtools",
+             "CL": "samtools view -bo out_b.bam in.sam"}])
+        bam_a = _write_oracle_bam(
+            os.path.join(str(tmp_path), "a.bam"), header=header_a)
+        bam_b = _write_oracle_bam(
+            os.path.join(str(tmp_path), "b.bam"), header=header_b)
+        assert check_api_readback_equal(bam_a, bam_b)
