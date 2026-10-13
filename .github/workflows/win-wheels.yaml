@@ -141,3 +141,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          # Repository context via env: this job has no checkout step (artifact
+          # only), and gh shells out to git to learn the repo otherwise.
+          GH_REPO: ${{ github.repository }}
