@@ -156,5 +156,24 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 3. MSVC 构建系统 | 5/5 | Complete    | 2026-10-13 |
 | 4. Windows CI 与 wheel 分发 | 3/3 | Complete    | 2026-10-13 |
 
+### Phase 5: 技术债清理：MSVC_LIBHTS_OBJS 自动 lockstep、shim 哨兵补全、clean_smoke 去硬编码、win32 oracle 强化
+
+**Goal**: v1 里程碑审计记录的 advisory 技术债全部机械化关闭 —— MSVC_LIBHTS_OBJS 镜像有自动 lockstep 检查兜底（htslib 升级漂移即构建失败）、shim 哨兵覆盖全部五个 drop-in、clean_smoke 的 Python 版本单点定义、win32 samtools_test 对比侧恢复独立性 —— 零回归（双工具链 smoke + fork CI 全绿）。
+**Depends on**: Phase 4
+**Requirements**: （债务清理 — 无新增 v1 需求 ID；13/13 需求已满足，本阶段以 05-CONTEXT.md 债务清单 1-4 为必做规格）
+**Success Criteria** (what must be TRUE):
+
+  1. mirror 与 `make print-config` 展开的 LIBHTS_OBJS 出现任何增/删差异时，UCRT64 构建路径与独立 devtools 检查均 fail（合成漂移自测试证明有牙）
+  2. shim_selftest.c 在 cl 与 UCRT64 gcc 双工具链下编译通过并覆盖全部五个 drop-in；过期 `#endif` 标签清除
+  3. clean_smoke 的 Python 版本仅在一处定义（workflow_dispatch input，默认 cp313），win-test 干跑 tag 与非默认参数 dispatch 双路径实证
+  4. win32 BAM 对比侧改用 pysam API 读回比对（不再同码重入 dispatch），POSIX 分支行级不动；比较器有合成变异测试证明有牙
+  5. 零回归：双工具链 smoke + 触及的测试文件双工具链通过 + fork CI 全绿
+
+**Plans:** 1 plan
+
+Plans:
+
+- [ ] 05-01-PLAN.md — 债务 1-5 全清理：lockstep tracer（comparator + 接线 + 自测试）→ shim 哨兵 → clean_smoke 参数化（win-test.3 实证）→ win32 oracle 强化 + 零回归收口
+
 ---
 *Roadmap created: 2026-09-17*
