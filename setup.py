@@ -151,10 +151,10 @@ def run_make_print_config():
 def check_msvc_libhts_objs_lockstep(make_libhts_objs_str):
     """05 debt item 1 (v1 audit IN-W2): enforce the MSVC_LIBHTS_OBJS
     mirror (BUILD-02, 03-03) against htslib/Makefile's real LIBHTS_OBJS
-    expansion. Any add/remove divergence raises LinkError -- the same
-    gate exception the BUILD-03 symbol gate raises -- so an htslib
-    upgrade that changes the object set can never silently strand the
-    hand-maintained MSVC module graph. The mirror tracks the
+    expansion. Any add, remove, or duplicate divergence raises LinkError
+    -- the same gate exception the BUILD-03 symbol gate raises -- so an
+    htslib upgrade that changes the object set can never silently strand
+    the hand-maintained MSVC module graph. The mirror tracks the
     wheel-parity (--disable-libcurl) object set only;
     devtools/check_libhts_objs_lockstep.py extracts this comparator
     verbatim via ast and reports the same verdict standalone (single
@@ -162,6 +162,17 @@ def check_msvc_libhts_objs_lockstep(make_libhts_objs_str):
     """
     make_objs = set(make_libhts_objs_str.split())
     mirror_objs = set(MSVC_LIBHTS_OBJS)
+    # 05 WR-01: set-equality alone is blind to duplicate mirror entries
+    # (copy-paste drift -- exactly the drift class this gate exists to
+    # catch): the duplicate collapses into the set and passes silently,
+    # then the MSVC module graph compiles the same TU twice and fails
+    # far from the root cause. Reject it before the set comparison.
+    if len(mirror_objs) != len(MSVC_LIBHTS_OBJS):
+        dupes = sorted(o for o in mirror_objs
+                       if MSVC_LIBHTS_OBJS.count(o) > 1)
+        raise LinkError(
+            "MSVC_LIBHTS_OBJS contains duplicate entries: %s"
+            % " ".join(dupes))
     if make_objs == mirror_objs:
         return
     add_to_mirror = sorted(make_objs - mirror_objs)

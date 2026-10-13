@@ -13,9 +13,10 @@ htslib:
      the expansion; exit 0 only on set-equality with the mirror.
   4. --self-test teeth -- a synthetic drift (one real token dropped, one
      phantom *.o added) built from the REAL expansion must make the
-     comparator raise LinkError; exit 0 only when the real state passes
-     AND the synthetic drift raises (probe_symbol_check.py's teeth +
-     honesty structure).
+     comparator raise LinkError, and a duplicated mirror entry (05 WR-01
+     copy-paste drift) must raise too; exit 0 only when the real state
+     passes AND both synthetic corruptions raise (probe_symbol_check.py's
+     teeth + honesty structure).
 
 Side effects: the configure step mutates htslib/config.h and config.mk
 exactly as every UCRT64 build does. The MSVC arm rewrites config.h from
@@ -140,10 +141,27 @@ def main():
         comparator(drifted)
     except LinkError:
         print("teeth OK: synthetic drift raised LinkError (2-TU delta)")
-        return 0
-    print("FAIL: comparator accepted a synthetic drifted expansion -- "
-          "no teeth")
-    return 1
+    else:
+        print("FAIL: comparator accepted a synthetic drifted expansion -- "
+              "no teeth")
+        return 1
+
+    # Teeth (05 WR-01): a duplicated mirror entry (copy-paste drift in
+    # MSVC_LIBHTS_OBJS itself) must make the comparator raise. The
+    # comparator reads the mirror from the exec namespace it was compiled
+    # into (its __globals__); duplicate one entry there, then restore.
+    comparator.__globals__["MSVC_LIBHTS_OBJS"] = mirror + mirror[:1]
+    try:
+        comparator(expansion)
+    except LinkError:
+        print("teeth OK: duplicated mirror entry raised LinkError")
+    else:
+        print("FAIL: comparator accepted a duplicated mirror entry -- "
+              "no teeth")
+        return 1
+    finally:
+        comparator.__globals__["MSVC_LIBHTS_OBJS"] = mirror
+    return 0
 
 
 if __name__ == "__main__":
