@@ -1,0 +1,36 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-10-14T00:43:10.146Z",
+  "phase": null,
+  "phase_name": "里程碑间（v1 完成后）",
+  "phase_dir": null,
+  "plan": null,
+  "task": null,
+  "total_tasks": null,
+  "status": "milestone-complete",
+  "completed_tasks": [
+    {"id": 1, "name": "Phase 1 MinGW-w64 构建系统", "status": "done", "commit": "c7d779d9 验证刷新 858e7dcb 归档"},
+    {"id": 2, "name": "Phase 2 可移植性加固与测试全绿", "status": "done", "commit": "8f1f517f + 刷新 174d8b2d"},
+    {"id": 3, "name": "Phase 3 MSVC 构建系统", "status": "done", "commit": "3084e12a + 刷新 174d8b2d"},
+    {"id": 4, "name": "Phase 4 Windows CI 与 wheel 分发", "status": "done", "commit": "b53bde87 + 刷新 174d8b2d"},
+    {"id": 5, "name": "Phase 5 技术债清理（用户裁决插入）", "status": "done", "commit": "f5607d75"},
+    {"id": 6, "name": "里程碑审计（tech_debt → 用户选先清债 → Phase 5 后 passed）", "status": "done", "commit": "6adf94e2"},
+    {"id": 7, "name": "v1 归档（milestones/v1-*、REQUIREMENTS 移除、回顾、tag）", "status": "done", "commit": "858e7dcb..672bb3a8+5f828ede"}
+  ],
+  "remaining_tasks": [
+    {"id": 8, "name": "（可选）启动 v2：/gsd-new-milestone", "status": "not_started"}
+  ],
+  "blockers": [],
+  "async_jobs": [],
+  "human_actions_pending": [
+    {"action": "更新 CLAUDE.md「当前焦点」（仍写 Phase 1，已过时两个里程碑节点）", "context": "里程碑收尾时多次标注未处理；建议下次会话顺手更新为 v2 规划状态", "blocking": false}
+  ],
+  "decisions": [
+    {"decision": "里程碑 tag 命名：v1-milestone（无点）", "rationale": "v1.0-win 含点匹配 win-wheels glob v[0-9]+.* 触发了流水线（已取消+删 tag 重打）；教训：里程碑 tag 避免含点，避免撞发布 glob", "phase": "v1-close"},
+    {"decision": "milestone 归档的移动需双侧提交", "rationale": "milestone.complete 只提交具名文件；phase 目录移动的删除侧与新增侧（v1-phases/）需各自 add——新增侧曾漏（pause 时发现补提交 5f828ede）", "phase": "v1-close"},
+    {"decision": "v1 收口前刷新 Phase 1-4 stale 验证", "rationale": "#4682 指纹保鲜要求对最终树新鲜；4 个 verifier 串行刷新全 passed（15/23/11/12）", "phase": "v1-close"}
+  ],
+  "uncommitted_files": ["?? .planning/tmp/ (会话草稿)"],
+  "next_action": "项目处于干净里程碑间状态。要么 /gsd-new-milestone 启动 v2（候选已记录在 milestones/v1-MILESTONE-AUDIT.md 残余节 + RETROSPECTIVE.md：远程 I/O、PyPI 官方名、wheel 逐版本全量门、直接映像符号门、05-REVIEW IN-01..05），要么直接发布：推任意 v<version>-win.N tag 触发 win-wheels 流水线。",
+  "context_notes": "v1 交付：Release v0.24.1-win.2 线上 6 wheel（cp310-cp315）；双工具链 1034/15/0；fork CI 25/25；5 phase 全新鲜验证。发新 wheel = 推 v<ver>-win.N tag；日常零回归门 = 每 push 的 ci.yaml（含 6-cell windows matrix）。环境契约：UCRT64 需 MAKE=mingw32-make；MSVC 用 _venv-msvc；里程碑 tag 勿含点。"
+}
