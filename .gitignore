@@ -97,6 +97,7 @@ doc/_build/
 .planning/agent-history.json
 .planning/milestone.lock
 .planning/state.json
+.planning/tmp/
 
 # MSYS2 UCRT64 dev venv (bootstrap build environment)
 _venv/
